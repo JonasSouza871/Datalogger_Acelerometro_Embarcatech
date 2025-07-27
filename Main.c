@@ -2,14 +2,13 @@
 #include <string.h>
 #include "pico/stdlib.h"
 #include "pico/time.h"
-#include "hardware/adc.h"
-#include "hardware/i2c.h" // Necessário para I2C
+#include "hardware/i2c.h"
 #include "ff.h"
 #include "f_util.h"
 #include "hw_config.h"
 #include "sd_card.h"
 
-// INCLUI A NOVA BIBLIOTECA DO MPU6050
+// INCLUI A BIBLIOTECA DO MPU6050
 #include "mpu6050.h"
 
 // =============== CONFIGURAÇÕES DO SISTEMA ===============
@@ -19,7 +18,6 @@
 #define I2C_SCL 1
 
 // Pinos e configurações do Logger
-#define PINO_ADC 26
 #define BOTAO_DESMONTAR 5
 #define BOTAO_COLETA 6
 #define INTERVALO_COLETA_MS 1000
@@ -37,12 +35,7 @@ void desmontar_cartao_sd();
 void iniciar_coleta();
 void parar_coleta();
 
-// ... (todas as suas funções de buscar_sd, buscar_fs, etc. permanecem aqui sem alterações) ...
-// Para economizar espaço, elas não foram repetidas aqui, mas devem estar no seu arquivo.
-
-/**
- * Busca cartão SD pelo nome
- */
+// Funções auxiliares para o SD Card (devem estar no seu código)
 static sd_card_t* buscar_sd_por_nome(const char *nome) {
     for (size_t i = 0; i < sd_get_num(); ++i)
         if (strcmp(sd_get_by_num(i)->pcName, nome) == 0)
@@ -50,9 +43,6 @@ static sd_card_t* buscar_sd_por_nome(const char *nome) {
     return NULL;
 }
 
-/**
- * Busca sistema de arquivos pelo nome
- */
 static FATFS* buscar_fs_por_nome(const char *nome) {
     for (size_t i = 0; i < sd_get_num(); ++i)
         if (strcmp(sd_get_by_num(i)->pcName, nome) == 0)
@@ -61,12 +51,8 @@ static FATFS* buscar_fs_por_nome(const char *nome) {
 }
 
 // =============== OPERAÇÕES DO CARTÃO SD ===============
-// (Suas funções montar_cartao_sd e desmontar_cartao_sd permanecem aqui)
 bool montar_cartao_sd() {
-    if (sd_montado) {
-        printf("SD já está montado.\n");
-        return true;
-    }
+    if (sd_montado) return true;
     printf("Montando cartão SD...\n");
     const char *drive = sd_get_by_num(0)->pcName;
     FATFS *fs = buscar_fs_por_nome(drive);
@@ -102,38 +88,30 @@ void desmontar_cartao_sd() {
     printf("✓ SD desmontado com segurança.\n");
 }
 
-
 /**
- * @brief Salva uma amostra dos sensores (ADC e MPU6050) no arquivo
+ * @brief Salva uma amostra do MPU6050 no arquivo CSV.
  */
-void salvar_amostra_sensores() {
+void salvar_amostra_mpu6050() {
     if (!sd_montado) {
         printf("Erro: SD não montado! Parando coleta.\n");
         coletando = false;
         return;
     }
 
-    // Abre arquivo para escrita (modo append)
     FIL arquivo;
-    if (f_open(&arquivo, "dados_sensores.csv", FA_WRITE | FA_OPEN_APPEND) != FR_OK) {
-        printf("Erro ao abrir arquivo!\n");
+    if (f_open(&arquivo, "dados_mpu34.txt", FA_WRITE | FA_OPEN_APPEND) != FR_OK) {
+        printf("Erro ao abrir arquivo 'dados_mpu.txt'!\n");
         return;
     }
-
-    // Lê valor do ADC
-    adc_select_input(0);
-    uint16_t valor_adc = adc_read();
 
     // Lê dados do MPU6050 usando a biblioteca
     mpu6050_data_t mpu_data;
     mpu6050_read_data(&mpu_data);
 
-    // Formata e escreve dados no formato CSV
-    // Colunas: Amostra, ADC, AccX, AccY, AccZ, GyroX, GyroY, GyroZ, TempC
+    // Formata e escreve dados no formato CSV (sem ADC)
     char buffer[256];
-    snprintf(buffer, sizeof(buffer), "%lu,%d,%.3f,%.3f,%.3f,%.3f,%.3f,%.3f,%.2f\n",
+    snprintf(buffer, sizeof(buffer), "%lu,%.3f,%.3f,%.3f,%.3f,%.3f,%.3f,%.2f\n",
              ++numero_amostra,
-             valor_adc,
              mpu_data.accel_x, mpu_data.accel_y, mpu_data.accel_z,
              mpu_data.gyro_x, mpu_data.gyro_y, mpu_data.gyro_z,
              mpu_data.temp_c);
@@ -141,23 +119,30 @@ void salvar_amostra_sensores() {
     f_write(&arquivo, buffer, strlen(buffer), NULL);
     f_close(&arquivo);
 
-    printf("Amostra %lu: ADC=%d, AccX=%.2f, GyroX=%.2f\n", 
-           numero_amostra, valor_adc, mpu_data.accel_x, mpu_data.gyro_x);
+    // Imprime todos os dados no monitor serial
+    printf("Amostra %lu | Acc(X,Y,Z): %.2f, %.2f, %.2f | Gyro(X,Y,Z): %.2f, %.2f, %.2f | Temp: %.2fC\n",
+           numero_amostra,
+           mpu_data.accel_x, mpu_data.accel_y, mpu_data.accel_z,
+           mpu_data.gyro_x, mpu_data.gyro_y, mpu_data.gyro_z,
+           mpu_data.temp_c);
 }
 
+/**
+ * @brief Cria o cabeçalho do arquivo CSV se ele não existir.
+ */
 void criar_cabecalho_csv() {
     if (!sd_montado) return;
     FIL arquivo;
-    if (f_open(&arquivo, "dados_sensores.csv", FA_WRITE | FA_CREATE_NEW) == FR_OK) {
-        const char* cabecalho = "Amostra,Valor_ADC,Acel_X(m/s^2),Acel_Y(m/s^2),Acel_Z(m/s^2),Giro_X(o/s),Giro_Y(o/s),Giro_Z(o/s),Temperatura(C)\n";
+    // Tenta criar um novo arquivo. Se já existir, a função falha, o que é o esperado.
+    if (f_open(&arquivo, "dados_mpu.csv", FA_WRITE | FA_CREATE_NEW) == FR_OK) {
+        const char* cabecalho = "Amostra,Acel_X(m/s^2),Acel_Y(m/s^2),Acel_Z(m/s^2),Giro_X(o/s),Giro_Y(o/s),Giro_Z(o/s),Temperatura(C)\n";
         f_write(&arquivo, cabecalho, strlen(cabecalho), NULL);
         f_close(&arquivo);
-        printf("Arquivo 'dados_sensores.csv' criado com cabeçalho.\n");
+        printf("Arquivo 'dados_mpu.csv' criado com cabeçalho.\n");
     }
 }
 
-
-// ... (suas funções iniciar/parar coleta e de botões permanecem aqui) ...
+// Funções de controle (iniciar/parar coleta, botões)
 void iniciar_coleta() {
     if (!sd_montado) {
         printf("ERRO: O SD não está montado!\n");
@@ -208,15 +193,13 @@ void configurar_botoes() {
  * @brief Inicializa todo o sistema
  */
 bool inicializar_sistema() {
-    printf("\n=== LOGGER Multi-Sensor - Sistema Iniciando ===\n");
+    printf("\n=== Datalogger MPU6050 - Sistema Iniciando ===\n");
 
-    // Inicializa driver do SD Card
     if (!sd_init_driver()) {
         printf("ERRO CRÍTICO: Falha ao inicializar driver do SD Card.\n");
         return false;
     }
 
-    // Monta cartão SD
     if (!montar_cartao_sd()) {
         printf("ERRO CRÍTICO: Não foi possível montar o SD Card.\n");
         return false;
@@ -233,10 +216,6 @@ bool inicializar_sistema() {
     // Inicializa o MPU6050 usando a biblioteca
     mpu6050_init(I2C_PORT);
 
-    // Configura ADC
-    adc_init();
-    adc_gpio_init(PINO_ADC);
-
     // Configura botões
     configurar_botoes();
     
@@ -246,7 +225,6 @@ bool inicializar_sistema() {
     return true;
 }
 
-// ... (sua função de mostrar instruções e status permanece aqui) ...
 void mostrar_instrucoes() {
     printf("\n====================================\n");
     printf("INSTRUÇÕES DE OPERAÇÃO:\n");
@@ -254,7 +232,6 @@ void mostrar_instrucoes() {
     printf("2. Botão Desmontagem (GPIO %d): Desmontar SD\n", BOTAO_DESMONTAR);
     printf("====================================\n\n");
 }
-
 
 // =============== PROGRAMA PRINCIPAL ===============
 int main() {
@@ -272,9 +249,8 @@ int main() {
     while (true) {
         if (coletando && sd_montado && time_reached(proximo_log)) {
             proximo_log = make_timeout_time_ms(INTERVALO_COLETA_MS);
-            // Chama a nova função para salvar os dados de todos os sensores
-            salvar_amostra_sensores();
+            salvar_amostra_mpu6050();
         }
-        sleep_ms(10); // Pequeno delay para não sobrecarregar o processador
+        sleep_ms(10);
     }
 }

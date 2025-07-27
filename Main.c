@@ -110,8 +110,9 @@ void save_adc_data() {
     }
     
     FIL file;
-    // Abre o arquivo de texto em modo de adição. Cria se não existir.
-    if (f_open(&file, "dados.txt", FA_WRITE | FA_OPEN_APPEND | FA_CREATE_ALWAYS) != FR_OK) {
+    // CORREÇÃO: Removido FA_CREATE_ALWAYS para permitir o append.
+    // FA_OPEN_APPEND já cria o arquivo se ele não existir.
+    if (f_open(&file, "dadosAgoraVai.txt", FA_WRITE | FA_OPEN_APPEND) != FR_OK) {
         printf("Erro ao abrir arquivo!\n");
         return;
     }

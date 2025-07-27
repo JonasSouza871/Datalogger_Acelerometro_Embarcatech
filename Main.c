@@ -7,8 +7,6 @@
 #include "f_util.h"
 #include "hw_config.h"
 #include "sd_card.h"
-
-// INCLUI A BIBLIOTECA DO MPU6050
 #include "mpu6050.h"
 
 // =============== CONFIGURAÇÕES DO SISTEMA ===============
@@ -23,17 +21,62 @@
 #define INTERVALO_COLETA_MS 1000
 #define DEBOUNCE_US 300000
 
+// NOVO: Definição dos pinos do LED RGB
+#define LED_GREEN_PIN 11
+#define LED_BLUE_PIN 12
+#define LED_RED_PIN 13
+
 // =============== VARIÁVEIS GLOBAIS ===============
 static bool coletando = false;
 static bool sd_montado = false;
 static absolute_time_t proximo_log;
 static uint32_t numero_amostra = 0;
 
-// Declaração antecipada de funções
-bool montar_cartao_sd();
-void desmontar_cartao_sd();
-void iniciar_coleta();
+// =============== PROTÓTIPOS DE FUNÇÕES ===============
+// Declaração antecipada para resolver o aviso de "implicit declaration",
+// já que desmontar_cartao_sd() é definida antes de parar_coleta().
 void parar_coleta();
+
+
+// =============== NOVAS FUNÇÕES DE CONTROLE DO LED ===============
+
+/**
+ * @brief Inicializa os pinos do LED RGB como saídas.
+ */
+void led_init() {
+    gpio_init(LED_RED_PIN);
+    gpio_init(LED_GREEN_PIN);
+    gpio_init(LED_BLUE_PIN);
+    gpio_set_dir(LED_RED_PIN, GPIO_OUT);
+    gpio_set_dir(LED_GREEN_PIN, GPIO_OUT);
+    gpio_set_dir(LED_BLUE_PIN, GPIO_OUT);
+}
+
+/**
+ * @brief Define a cor do LED.
+ * Assume LED de catodo comum (1 = LIGADO, 0 = DESLIGADO).
+ * @param r true para ligar o vermelho
+ * @param g true para ligar o verde
+ * @param b true para ligar o azul
+ */
+void led_set_color(bool r, bool g, bool b) {
+    gpio_put(LED_RED_PIN, r);
+    gpio_put(LED_GREEN_PIN, g);
+    gpio_put(LED_BLUE_PIN, b);
+}
+
+/**
+ * @brief Pisca o LED na cor roxa para indicar um erro fatal.
+ * Esta função entra em um loop infinito.
+ */
+void led_error_blink() {
+    while (true) {
+        led_set_color(true, false, true); // Roxo
+        sleep_ms(250);
+        led_set_color(false, false, false); // Desligado
+        sleep_ms(250);
+    }
+}
 
 // Funções auxiliares para o SD Card (devem estar no seu código)
 static sd_card_t* buscar_sd_por_nome(const char *nome) {
@@ -75,9 +118,7 @@ bool montar_cartao_sd() {
 void desmontar_cartao_sd() {
     if (!sd_montado) return;
     if (coletando) {
-        coletando = false;
-        printf("Parando coleta para desmontar SD...\n");
-        sleep_ms(100);
+        parar_coleta(); // Usa a função para garantir que o LED mude de cor
     }
     const char *drive = sd_get_by_num(0)->pcName;
     printf("Desmontando SD...\n");
@@ -85,6 +126,7 @@ void desmontar_cartao_sd() {
     sd_card_t *cartao = buscar_sd_por_nome(drive);
     cartao->mounted = false;
     sd_montado = false;
+    led_set_color(false, false, false); // Desliga o LED
     printf("✓ SD desmontado com segurança.\n");
 }
 
@@ -95,20 +137,24 @@ void salvar_amostra_mpu6050() {
     if (!sd_montado) {
         printf("Erro: SD não montado! Parando coleta.\n");
         coletando = false;
+        led_error_blink(); // Erro durante a coleta
         return;
     }
+
+    // MODIFICADO: Pisca azul para indicar acesso ao SD
+    led_set_color(false, false, true); // Azul
+    sleep_ms(50); // Mantém azul por um instante
 
     FIL arquivo;
-    if (f_open(&arquivo, "dados_mpuTEMQUEIR23.txt", FA_WRITE | FA_OPEN_APPEND) != FR_OK) {
-        printf("Erro ao abrir arquivo 'dados_mpu.txt'!\n");
+    if (f_open(&arquivo, "dados_mpu.csv", FA_WRITE | FA_OPEN_APPEND) != FR_OK) {
+        printf("Erro ao abrir arquivo 'dados_mpu.csv'!\n");
+        led_error_blink(); // Erro de escrita no SD
         return;
     }
 
-    // Lê dados do MPU6050 usando a biblioteca
     mpu6050_data_t mpu_data;
     mpu6050_read_data(&mpu_data);
 
-    // Formata e escreve dados no formato CSV (sem ADC)
     char buffer[256];
     snprintf(buffer, sizeof(buffer), "%lu,%.3f,%.3f,%.3f,%.3f,%.3f,%.3f,%.2f\n",
              ++numero_amostra,
@@ -119,7 +165,9 @@ void salvar_amostra_mpu6050() {
     f_write(&arquivo, buffer, strlen(buffer), NULL);
     f_close(&arquivo);
 
-    // Imprime todos os dados no monitor serial
+    // MODIFICADO: Restaura a cor vermelha de coleta
+    led_set_color(true, false, false); // Vermelho
+
     printf("Amostra %lu | Acc(X,Y,Z): %.2f, %.2f, %.2f | Gyro(X,Y,Z): %.2f, %.2f, %.2f | Temp: %.2fC\n",
            numero_amostra,
            mpu_data.accel_x, mpu_data.accel_y, mpu_data.accel_z,
@@ -127,13 +175,9 @@ void salvar_amostra_mpu6050() {
            mpu_data.temp_c);
 }
 
-/**
- * @brief Cria o cabeçalho do arquivo CSV se ele não existir.
- */
 void criar_cabecalho_csv() {
     if (!sd_montado) return;
     FIL arquivo;
-    // Tenta criar um novo arquivo. Se já existir, a função falha, o que é o esperado.
     if (f_open(&arquivo, "dados_mpu.csv", FA_WRITE | FA_CREATE_NEW) == FR_OK) {
         const char* cabecalho = "Amostra,Acel_X(m/s^2),Acel_Y(m/s^2),Acel_Z(m/s^2),Giro_X(o/s),Giro_Y(o/s),Giro_Z(o/s),Temperatura(C)\n";
         f_write(&arquivo, cabecalho, strlen(cabecalho), NULL);
@@ -150,6 +194,7 @@ void iniciar_coleta() {
     }
     if (coletando) return;
     coletando = true;
+    led_set_color(true, false, false); // MODIFICADO: Vermelho para coleta
     proximo_log = get_absolute_time();
     printf("✓ Coleta INICIADA!\n");
 }
@@ -157,6 +202,7 @@ void iniciar_coleta() {
 void parar_coleta() {
     if (!coletando) return;
     coletando = false;
+    led_set_color(false, true, false); // MODIFICADO: Verde para pronto
     printf("✓ Coleta PARADA.\n");
 }
 
@@ -194,34 +240,29 @@ void configurar_botoes() {
  */
 bool inicializar_sistema() {
     printf("\n=== Datalogger MPU6050 - Sistema Iniciando ===\n");
+    led_set_color(true, true, false); // MODIFICADO: Amarelo para inicializando
 
     if (!sd_init_driver()) {
         printf("ERRO CRÍTICO: Falha ao inicializar driver do SD Card.\n");
-        return false;
+        return false; // Retorna false para ser tratado no main
     }
 
     if (!montar_cartao_sd()) {
         printf("ERRO CRÍTICO: Não foi possível montar o SD Card.\n");
-        return false;
+        return false; // Retorna false para ser tratado no main
     }
 
-    // Configura I2C para o MPU6050
     i2c_init(I2C_PORT, 400 * 1000);
     gpio_set_function(I2C_SDA, GPIO_FUNC_I2C);
     gpio_set_function(I2C_SCL, GPIO_FUNC_I2C);
     gpio_pull_up(I2C_SDA);
     gpio_pull_up(I2C_SCL);
-    printf("I2C configurado nos pinos SDA=%d, SCL=%d\n", I2C_SDA, I2C_SCL);
-
-    // Inicializa o MPU6050 usando a biblioteca
-    mpu6050_init(I2C_PORT);
-
-    // Configura botões
-    configurar_botoes();
     
-    // Cria o arquivo CSV com cabeçalho se ele não existir
+    mpu6050_init(I2C_PORT);
+    configurar_botoes();
     criar_cabecalho_csv();
 
+    led_set_color(false, true, false); // MODIFICADO: Verde para sistema pronto
     return true;
 }
 
@@ -236,11 +277,12 @@ void mostrar_instrucoes() {
 // =============== PROGRAMA PRINCIPAL ===============
 int main() {
     stdio_init_all();
+    led_init(); // NOVO: Inicializa os pinos do LED
     sleep_ms(3000);
 
     if (!inicializar_sistema()) {
         printf("Falha na inicialização. Sistema interrompido.\n");
-        while (true) sleep_ms(1000);
+        led_error_blink(); // MODIFICADO: Pisca roxo em caso de erro fatal
     }
 
     mostrar_instrucoes();

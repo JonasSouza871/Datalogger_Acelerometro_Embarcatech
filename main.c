@@ -10,284 +10,426 @@
 #include "mpu6050.h"
 #include "ssd1306.h"
 
-/* ---------- DEFINIÇÕES DE HARDWARE ---------- */
-#define I2C_MPU_PORT     i2c0
-#define I2C_MPU_SDA      0
-#define I2C_MPU_SCL      1
+/*=================================================================
+   CONFIGURAÇÕES DE HARDWARE - Definem quais pinos usar
+=================================================================*/
 
-#define I2C_OLED_PORT    i2c1
-#define I2C_OLED_SDA     14
-#define I2C_OLED_SCL     15
-#define OLED_ADDR        0x3C   /* troque se necessário */
+// Pinos do I²C para o sensor MPU6050
+#define I2C_SENSOR_PORTA    i2c0
+#define I2C_SENSOR_SDA      0
+#define I2C_SENSOR_SCL      1
 
-#define BOTAO_DESMONTAR  5
-#define BOTAO_COLETA     6
-#define INTERVALO_COLETA_MS 1000
-#define DEBOUNCE_US      300000
+// Pinos do I²C para o display OLED
+#define I2C_DISPLAY_PORTA   i2c1
+#define I2C_DISPLAY_SDA     14
+#define I2C_DISPLAY_SCL     15
+#define ENDERECO_OLED       0x3C
 
-#define LED_GREEN_PIN    11
-#define LED_BLUE_PIN     12
-#define LED_RED_PIN      13
+// Pinos dos botões de controle
+#define BOTAO_CARTAO_SD     5    // Liga/desliga cartão SD
+#define BOTAO_GRAVACAO      6    // Inicia/para gravação
 
-/* ---------- VARIÁVEIS GLOBAIS ---------- */
-static bool              coletando      = false;
-static bool              sd_montado     = false;
-static absolute_time_t   proximo_log;
-static uint32_t          numero_amostra = 0;
+// Pinos do LED RGB para indicações visuais
+#define LED_VERMELHO        13
+#define LED_VERDE           11
+#define LED_AZUL            12
 
-static ssd1306_t         oled;               /* display */
-static char              g_status[18]  = "INICIALIZ.";
-static char              g_msg[18]     = "";
-static uint32_t          g_amostras    = 0;
+// Configurações de tempo
+#define TEMPO_ENTRE_LEITURAS_MS  1000    // 1 segundo entre cada medição
+#define TEMPO_DEBOUNCE_US        300000  // Evita múltiplos cliques nos botões
 
-/* ---------- LED RGB ---------- */
-static void led_init(void) {
-    gpio_init(LED_RED_PIN);   gpio_set_dir(LED_RED_PIN,   GPIO_OUT);
-    gpio_init(LED_GREEN_PIN); gpio_set_dir(LED_GREEN_PIN, GPIO_OUT);
-    gpio_init(LED_BLUE_PIN);  gpio_set_dir(LED_BLUE_PIN,  GPIO_OUT);
+/*=================================================================
+   VARIÁVEIS GLOBAIS - Controlam o estado do sistema
+=================================================================*/
+
+// Estados principais do sistema
+static bool esta_gravando = false;
+static bool cartao_sd_conectado = false;
+static absolute_time_t proxima_medicao;
+static uint32_t contador_amostras = 0;
+
+// Variáveis do display OLED
+static ssd1306_t display_oled;
+static char texto_status[18] = "INICIANDO...";
+static char texto_mensagem[18] = "";
+static uint32_t numero_amostras_display = 0;
+
+/*=================================================================
+   FUNÇÕES DO LED RGB - Indicam o estado do sistema
+=================================================================*/
+
+// Configura os pinos do LED RGB como saídas
+static void configurar_led_rgb(void) {
+    gpio_init(LED_VERMELHO);
+    gpio_init(LED_VERDE);
+    gpio_init(LED_AZUL);
+    
+    gpio_set_dir(LED_VERMELHO, GPIO_OUT);
+    gpio_set_dir(LED_VERDE, GPIO_OUT);
+    gpio_set_dir(LED_AZUL, GPIO_OUT);
 }
-static void led_set_color(bool r, bool g, bool b) {
-    gpio_put(LED_RED_PIN,   r);
-    gpio_put(LED_GREEN_PIN, g);
-    gpio_put(LED_BLUE_PIN,  b);
+
+// Liga/desliga as cores do LED RGB
+static void definir_cor_led(bool vermelho, bool verde, bool azul) {
+    gpio_put(LED_VERMELHO, vermelho);
+    gpio_put(LED_VERDE, verde);
+    gpio_put(LED_AZUL, azul);
 }
-static void led_error_blink(void) {
+
+// Pisca LED roxo quando há erro crítico (trava o sistema)
+static void piscar_led_erro_critico(void) {
     while (1) {
-        led_set_color(true, false, true);  /* roxo */
+        definir_cor_led(true, false, true);  // Roxo = erro
         sleep_ms(250);
-        led_set_color(false, false, false);
+        definir_cor_led(false, false, false); // Apagado
         sleep_ms(250);
     }
 }
 
-/* ---------- OLED: inicialização e UI ---------- */
-static void oled_init(void) {
-    i2c_init(I2C_OLED_PORT, 400 * 1000);
-    gpio_set_function(I2C_OLED_SDA, GPIO_FUNC_I2C);
-    gpio_set_function(I2C_OLED_SCL, GPIO_FUNC_I2C);
-    gpio_pull_up(I2C_OLED_SDA);
-    gpio_pull_up(I2C_OLED_SCL);
+/*=================================================================
+   FUNÇÕES DO DISPLAY OLED - Interface visual do usuário
+=================================================================*/
 
-    ssd1306_init(&oled, 128, 64, false, OLED_ADDR, I2C_OLED_PORT);
-    ssd1306_config(&oled);
+// Configura e inicializa o display OLED
+static void configurar_display_oled(void) {
+    // Configura comunicação I²C para o display
+    i2c_init(I2C_DISPLAY_PORTA, 400 * 1000);
+    gpio_set_function(I2C_DISPLAY_SDA, GPIO_FUNC_I2C);
+    gpio_set_function(I2C_DISPLAY_SCL, GPIO_FUNC_I2C);
+    gpio_pull_up(I2C_DISPLAY_SDA);
+    gpio_pull_up(I2C_DISPLAY_SCL);
+
+    // Inicializa o display OLED 128x64 pixels
+    ssd1306_init(&display_oled, 128, 64, false, ENDERECO_OLED, I2C_DISPLAY_PORTA);
+    ssd1306_config(&display_oled);
 }
 
-/* --- helpers para UI --- */
-static void ui_redraw(void)
-{
-    ssd1306_fill(&oled, false);                    /* limpa tudo            */
+// Atualiza a tela do display com as informações atuais
+static void atualizar_tela(void) {
+    // Limpa toda a tela
+    ssd1306_fill(&display_oled, false);
 
-    /* cabeçalho */
-   
-    ssd1306_draw_string(&oled, "MPU6050 LOGGER", 14, 1, false);
+    // Título do sistema na parte superior
+    ssd1306_draw_string(&display_oled, "MPU6050 LOGGER", 14, 1, false);
 
-    /* divisórias horizontais */
-    ssd1306_hline(&oled, 0, 127, 12, true);
-    ssd1306_hline(&oled, 0, 127, 30, true);
-    ssd1306_hline(&oled, 0, 127, 48, true);
+    // Desenha linhas horizontais para separar seções
+    ssd1306_hline(&display_oled, 0, 127, 12, true);
+    ssd1306_hline(&display_oled, 0, 127, 30, true);
+    ssd1306_hline(&display_oled, 0, 127, 48, true);
 
-    /* STATUS (linha 16) */
-    char buf_status[30];
-    snprintf(buf_status, sizeof(buf_status), "STATUS: %s", g_status);
-    ssd1306_draw_string(&oled, buf_status, 0, 16, false);
+    // Mostra o status atual do sistema
+    char buffer_status[30];
+    snprintf(buffer_status, sizeof(buffer_status), "STATUS: %s", texto_status);
+    ssd1306_draw_string(&display_oled, buffer_status, 0, 16, false);
 
-    /* AMOSTRAS (linha 34) */
-    char buf_amostra[30];
-    snprintf(buf_amostra, sizeof(buf_amostra), "AMOSTRAS: %lu", g_amostras);
-    ssd1306_draw_string(&oled, buf_amostra, 0, 34, false);
+    // Mostra quantas amostras foram coletadas
+    char buffer_amostras[30];
+    snprintf(buffer_amostras, sizeof(buffer_amostras), "AMOSTRAS: %lu", numero_amostras_display);
+    ssd1306_draw_string(&display_oled, buffer_amostras, 0, 34, false);
 
-    /* Mensagens / rodapé (linha 52) */
-    ssd1306_draw_string(&oled, g_msg, 0, 52, false);
+    // Mostra mensagens adicionais na parte inferior
+    ssd1306_draw_string(&display_oled, texto_mensagem, 0, 52, false);
 
-    ssd1306_send_data(&oled);
+    // Envia tudo para o display físico
+    ssd1306_send_data(&display_oled);
 }
 
-/* setters amigáveis ------------------------------------------------ */
-static void ui_set_status(const char *txt)  { strncpy(g_status, txt, sizeof g_status - 1); ui_redraw(); }
-static void ui_set_msg(const char *txt)     { strncpy(g_msg,    txt, sizeof g_msg    - 1); ui_redraw(); }
-static void ui_set_amostras(uint32_t n)     { g_amostras = n; ui_redraw(); }
+// Funções auxiliares para atualizar informações na tela
+static void alterar_status_display(const char *novo_status) {
+    strncpy(texto_status, novo_status, sizeof(texto_status) - 1);
+    atualizar_tela();
+}
 
-/* ---------- SD helpers ---------- */
-static sd_card_t *buscar_sd_por_nome(const char *nome) {
-    for (size_t i = 0; i < sd_get_num(); ++i)
-        if (!strcmp(sd_get_by_num(i)->pcName, nome))
+static void alterar_mensagem_display(const char *nova_mensagem) {
+    strncpy(texto_mensagem, nova_mensagem, sizeof(texto_mensagem) - 1);
+    atualizar_tela();
+}
+
+static void alterar_contador_amostras_display(uint32_t numero) {
+    numero_amostras_display = numero;
+    atualizar_tela();
+}
+
+/*=================================================================
+   FUNÇÕES DO CARTÃO SD - Gerenciam armazenamento de dados
+=================================================================*/
+
+// Busca um cartão SD específico pelo nome
+static sd_card_t *buscar_cartao_sd_por_nome(const char *nome) {
+    for (size_t i = 0; i < sd_get_num(); ++i) {
+        if (!strcmp(sd_get_by_num(i)->pcName, nome)) {
             return sd_get_by_num(i);
-    return NULL;
-}
-static FATFS *buscar_fs_por_nome(const char *nome) {
-    for (size_t i = 0; i < sd_get_num(); ++i)
-        if (!strcmp(sd_get_by_num(i)->pcName, nome))
-            return &sd_get_by_num(i)->fatfs;
-    return NULL;
-}
-
-/* ---------- SD: montar / desmontar ---------- */
-static bool montar_cartao_sd(void) {
-    if (sd_montado) return true;
-
-    const char *drive = sd_get_by_num(0)->pcName;
-    FATFS *fs = buscar_fs_por_nome(drive);
-    if (!fs) { printf("Drive nao encontrado.\n"); return false; }
-
-    FRESULT r = f_mount(fs, drive, 1);
-    if (r != FR_OK) { printf("f_mount: %s\n", FRESULT_str(r)); return false; }
-
-    buscar_sd_por_nome(drive)->mounted = true;
-    sd_montado = true;
-    printf("SD montado.\n");
-    return true;
-}
-
-static void desmontar_cartao_sd(void) {
-    if (!sd_montado) return;
-
-    if (coletando) { /* garante parada limpa */
-        coletando = false;
-        led_set_color(false, true, false);
-    }
-
-    const char *drive = sd_get_by_num(0)->pcName;
-    f_unmount(drive);
-    buscar_sd_por_nome(drive)->mounted = false;
-    sd_montado = false;
-
-    led_set_color(false, false, false);
-    ui_set_status("SD OFF");
-    ui_set_msg("");
-    printf("SD desmontado.\n");
-}
-
-/* ---------- CSV ---------- */
-static void criar_cabecalho_csv(void) {
-    if (!sd_montado) return;
-    FIL arq;
-    if (f_open(&arq, "dados_mpu.csv", FA_WRITE | FA_CREATE_NEW) == FR_OK) {
-        const char *cab =
-            "Amostra,Acel_X,Acel_Y,Acel_Z,Giro_X,Giro_Y,Giro_Z,Temp\n";
-        f_write(&arq, cab, strlen(cab), NULL);
-        f_close(&arq);
-        printf("CSV criado.\n");
-    }
-}
-
-/* ---------- Coleta ---------- */
-static void salvar_amostra_mpu6050(void) {
-    if (!sd_montado) {
-        ui_set_status("ERRO SD");
-        led_error_blink();
-    }
-
-    led_set_color(false, false, true);             /* LED azul = gravação */
-
-    FIL arq;
-    if (f_open(&arq, "dados_mpu.csv", FA_WRITE | FA_OPEN_APPEND) != FR_OK) {
-        ui_set_status("ERRO CSV");
-        led_error_blink();
-    }
-
-    mpu6050_data_t d; mpu6050_read_data(&d);
-
-    char buf[256];
-    snprintf(buf, sizeof(buf),
-        "%lu,%.3f,%.3f,%.3f,%.3f,%.3f,%.3f,%.2f\n",
-        ++numero_amostra,
-        d.accel_x, d.accel_y, d.accel_z,
-        d.gyro_x,  d.gyro_y,  d.gyro_z,
-        d.temp_c);
-
-    f_write(&arq, buf, strlen(buf), NULL);
-    f_close(&arq);
-
-    led_set_color(true, false, false);             /* LED vermelho = ativo */
-
-    ui_set_amostras(numero_amostra);
-    ui_set_msg("Dados salvos");
-}
-
-static void iniciar_coleta(void) {
-    if (!sd_montado) { printf("SD nao montado.\n"); return; }
-    if (coletando) return;
-
-    coletando = true;
-    led_set_color(true, false, false);
-    ui_set_status("GRAVANDO");
-    ui_set_msg("");
-    proximo_log = get_absolute_time();
-}
-
-static void parar_coleta(void) {
-    if (!coletando) return;
-
-    coletando = false;
-    led_set_color(false, true, false);
-    ui_set_status("PAUSADA");
-    ui_set_msg("");
-}
-
-/* ---------- Botões ---------- */
-static void gpio_callback(uint gpio, uint32_t events) {
-    static uint64_t ult = 0;
-    uint64_t agora = time_us_64();
-    if (agora - ult < DEBOUNCE_US) return;
-    ult = agora;
-
-    if (gpio == BOTAO_DESMONTAR)
-        sd_montado ? desmontar_cartao_sd() : montar_cartao_sd();
-    else if (gpio == BOTAO_COLETA)
-        coletando ? parar_coleta() : iniciar_coleta();
-}
-
-static void configurar_botoes(void) {
-    gpio_init(BOTAO_DESMONTAR); gpio_set_dir(BOTAO_DESMONTAR, GPIO_IN); gpio_pull_up(BOTAO_DESMONTAR);
-    gpio_init(BOTAO_COLETA);    gpio_set_dir(BOTAO_COLETA,    GPIO_IN); gpio_pull_up(BOTAO_COLETA);
-
-    gpio_set_irq_enabled_with_callback(BOTAO_DESMONTAR, GPIO_IRQ_EDGE_FALL, true, &gpio_callback);
-    gpio_set_irq_enabled_with_callback(BOTAO_COLETA,    GPIO_IRQ_EDGE_FALL, true, &gpio_callback);
-}
-
-/* ---------- Sistema ---------- */
-static bool inicializar_sistema(void) {
-    ui_set_status("INICIALIZ.");
-    led_set_color(true, true, false);
-
-    if (!sd_init_driver())          { printf("SD driver.\n"); return false; }
-    if (!montar_cartao_sd())        { printf("Montar SD.\n"); return false; }
-
-    /* I²C0: MPU6050 */
-    i2c_init(I2C_MPU_PORT, 400*1000);
-    gpio_set_function(I2C_MPU_SDA, GPIO_FUNC_I2C);
-    gpio_set_function(I2C_MPU_SCL, GPIO_FUNC_I2C);
-    gpio_pull_up(I2C_MPU_SDA); gpio_pull_up(I2C_MPU_SCL);
-
-    mpu6050_init(I2C_MPU_PORT);
-
-    configurar_botoes();
-    criar_cabecalho_csv();
-
-    led_set_color(false, true, false);
-    ui_set_status("PRONTO");
-    return true;
-}
-
-/* ---------- MAIN ---------- */
-int main(void)
-{
-    stdio_init_all();
-    led_init();
-    oled_init();
-    ui_redraw();                                   /* tela inicial          */
-
-    sleep_ms(2500);                                /* aguarda terminal      */
-    if (!inicializar_sistema()) {
-        ui_set_status("ERRO FATAL");
-        led_error_blink();
-    }
-
-    while (1) {
-        if (coletando && sd_montado && time_reached(proximo_log)) {
-            proximo_log = make_timeout_time_ms(INTERVALO_COLETA_MS);
-            salvar_amostra_mpu6050();
         }
+    }
+    return NULL;
+}
+
+// Busca sistema de arquivos do cartão SD pelo nome
+static FATFS *buscar_sistema_arquivos_por_nome(const char *nome) {
+    for (size_t i = 0; i < sd_get_num(); ++i) {
+        if (!strcmp(sd_get_by_num(i)->pcName, nome)) {
+            return &sd_get_by_num(i)->fatfs;
+        }
+    }
+    return NULL;
+}
+
+// Conecta e monta o cartão SD para uso
+static bool conectar_cartao_sd(void) {
+    if (cartao_sd_conectado) return true;
+
+    const char *nome_drive = sd_get_by_num(0)->pcName;
+    FATFS *sistema_arquivos = buscar_sistema_arquivos_por_nome(nome_drive);
+    
+    if (!sistema_arquivos) {
+        printf("Drive do cartão SD não encontrado.\n");
+        return false;
+    }
+
+    // Tenta montar o cartão SD
+    FRESULT resultado = f_mount(sistema_arquivos, nome_drive, 1);
+    if (resultado != FR_OK) {
+        printf("Erro ao montar cartão SD: %s\n", FRESULT_str(resultado));
+        return false;
+    }
+
+    buscar_cartao_sd_por_nome(nome_drive)->mounted = true;
+    cartao_sd_conectado = true;
+    printf("Cartão SD conectado com sucesso.\n");
+    return true;
+}
+
+// Desconecta o cartão SD de forma segura
+static void desconectar_cartao_sd(void) {
+    if (!cartao_sd_conectado) return;
+
+    // Para a gravação se estiver ativa
+    if (esta_gravando) {
+        esta_gravando = false;
+        definir_cor_led(false, true, false); // LED verde = parado
+    }
+
+    const char *nome_drive = sd_get_by_num(0)->pcName;
+    f_unmount(nome_drive);
+    buscar_cartao_sd_por_nome(nome_drive)->mounted = false;
+    cartao_sd_conectado = false;
+
+    definir_cor_led(false, false, false); // LED apagado
+    alterar_status_display("SD DESCONECT.");
+    alterar_mensagem_display("");
+    printf("Cartão SD desconectado.\n");
+}
+
+/*=================================================================
+   FUNÇÕES DE GRAVAÇÃO DE DADOS
+=================================================================*/
+
+// Cria o arquivo CSV com o cabeçalho das colunas
+static void criar_arquivo_csv_com_cabecalho(void) {
+    if (!cartao_sd_conectado) return;
+    
+    FIL arquivo;
+    if (f_open(&arquivo, "dados_mpu.csv", FA_WRITE | FA_CREATE_NEW) == FR_OK) {
+        const char *cabecalho = 
+            "Amostra,Acel_X,Acel_Y,Acel_Z,Giro_X,Giro_Y,Giro_Z,Temperatura\n";
+        f_write(&arquivo, cabecalho, strlen(cabecalho), NULL);
+        f_close(&arquivo);
+        printf("Arquivo CSV criado com sucesso.\n");
+    }
+}
+
+// Lê dados do sensor MPU6050 e salva no cartão SD
+static void gravar_dados_do_sensor(void) {
+    if (!cartao_sd_conectado) {
+        alterar_status_display("ERRO: SEM SD");
+        piscar_led_erro_critico();
+    }
+
+    // LED azul indica que está gravando dados
+    definir_cor_led(false, false, true);
+
+    // Abre o arquivo CSV para adicionar nova linha
+    FIL arquivo;
+    if (f_open(&arquivo, "dados_mpu.csv", FA_WRITE | FA_OPEN_APPEND) != FR_OK) {
+        alterar_status_display("ERRO ARQUIVO");
+        piscar_led_erro_critico();
+    }
+
+    // Lê os dados atuais do sensor MPU6050
+    mpu6050_data_t dados_sensor;
+    mpu6050_read_data(&dados_sensor);
+
+    // Formata os dados em uma linha CSV
+    char linha_dados[256];
+    snprintf(linha_dados, sizeof(linha_dados),
+        "%lu,%.3f,%.3f,%.3f,%.3f,%.3f,%.3f,%.2f\n",
+        ++contador_amostras,
+        dados_sensor.accel_x, dados_sensor.accel_y, dados_sensor.accel_z,
+        dados_sensor.gyro_x,  dados_sensor.gyro_y,  dados_sensor.gyro_z,
+        dados_sensor.temp_c);
+
+    // Grava a linha no arquivo e fecha
+    f_write(&arquivo, linha_dados, strlen(linha_dados), NULL);
+    f_close(&arquivo);
+
+    // LED vermelho indica sistema ativo
+    definir_cor_led(true, false, false);
+
+    // Atualiza informações na tela
+    alterar_contador_amostras_display(contador_amostras);
+    alterar_mensagem_display("Dados salvos");
+}
+
+/*=================================================================
+   FUNÇÕES DE CONTROLE DA GRAVAÇÃO
+=================================================================*/
+
+// Inicia o processo de coleta e gravação de dados
+static void iniciar_gravacao_dados(void) {
+    if (!cartao_sd_conectado) {
+        printf("Cartão SD não está conectado.\n");
+        return;
+    }
+    if (esta_gravando) return; // Já está gravando
+
+    esta_gravando = true;
+    definir_cor_led(true, false, false); // LED vermelho = gravando
+    alterar_status_display("GRAVANDO");
+    alterar_mensagem_display("");
+    proxima_medicao = get_absolute_time();
+}
+
+// Para o processo de coleta e gravação de dados
+static void parar_gravacao_dados(void) {
+    if (!esta_gravando) return; // Já está parado
+
+    esta_gravando = false;
+    definir_cor_led(false, true, false); // LED verde = parado
+    alterar_status_display("PAUSADO");
+    alterar_mensagem_display("");
+}
+
+/*=================================================================
+   FUNÇÕES DOS BOTÕES DE CONTROLE
+=================================================================*/
+
+// Função chamada quando um botão é pressionado
+static void processar_clique_botao(uint pino_gpio, uint32_t eventos) {
+    // Implementa debounce - evita múltiplos cliques acidentais
+    static uint64_t ultimo_clique = 0;
+    uint64_t agora = time_us_64();
+    if (agora - ultimo_clique < TEMPO_DEBOUNCE_US) return;
+    ultimo_clique = agora;
+
+    // Processa ação baseada no botão pressionado
+    if (pino_gpio == BOTAO_CARTAO_SD) {
+        // Alterna entre conectar/desconectar cartão SD
+        if (cartao_sd_conectado) {
+            desconectar_cartao_sd();
+        } else {
+            conectar_cartao_sd();
+        }
+    } else if (pino_gpio == BOTAO_GRAVACAO) {
+        // Alterna entre iniciar/parar gravação
+        if (esta_gravando) {
+            parar_gravacao_dados();
+        } else {
+            iniciar_gravacao_dados();
+        }
+    }
+}
+
+// Configura os botões e suas interrupções
+static void configurar_botoes_controle(void) {
+    // Configura pinos dos botões como entrada com pull-up interno
+    gpio_init(BOTAO_CARTAO_SD);
+    gpio_init(BOTAO_GRAVACAO);
+    gpio_set_dir(BOTAO_CARTAO_SD, GPIO_IN);
+    gpio_set_dir(BOTAO_GRAVACAO, GPIO_IN);
+    gpio_pull_up(BOTAO_CARTAO_SD);
+    gpio_pull_up(BOTAO_GRAVACAO);
+
+    // Configura interrupções para detectar quando botões são pressionados
+    gpio_set_irq_enabled_with_callback(BOTAO_CARTAO_SD, GPIO_IRQ_EDGE_FALL, true, &processar_clique_botao);
+    gpio_set_irq_enabled_with_callback(BOTAO_GRAVACAO, GPIO_IRQ_EDGE_FALL, true, &processar_clique_botao);
+}
+
+/*=================================================================
+   FUNÇÃO DE INICIALIZAÇÃO DO SISTEMA
+=================================================================*/
+
+// Inicializa todos os componentes do sistema
+static bool inicializar_sistema_completo(void) {
+    alterar_status_display("INICIANDO...");
+    definir_cor_led(true, true, false); // LED amarelo = inicializando
+
+    // Inicializa driver do cartão SD
+    if (!sd_init_driver()) {
+        printf("Erro ao inicializar driver do cartão SD.\n");
+        return false;
+    }
+
+    // Conecta cartão SD
+    if (!conectar_cartao_sd()) {
+        printf("Erro ao conectar cartão SD.\n");
+        return false;
+    }
+
+    // Configura comunicação I²C para o sensor MPU6050
+    i2c_init(I2C_SENSOR_PORTA, 400 * 1000);
+    gpio_set_function(I2C_SENSOR_SDA, GPIO_FUNC_I2C);
+    gpio_set_function(I2C_SENSOR_SCL, GPIO_FUNC_I2C);
+    gpio_pull_up(I2C_SENSOR_SDA);
+    gpio_pull_up(I2C_SENSOR_SCL);
+
+    // Inicializa o sensor MPU6050
+    mpu6050_init(I2C_SENSOR_PORTA);
+
+    // Configura botões de controle
+    configurar_botoes_controle();
+
+    // Cria arquivo CSV inicial
+    criar_arquivo_csv_com_cabecalho();
+
+    // Sistema pronto para uso
+    definir_cor_led(false, true, false); // LED verde = pronto
+    alterar_status_display("PRONTO");
+    return true;
+}
+
+/*=================================================================
+   FUNÇÃO PRINCIPAL DO PROGRAMA
+=================================================================*/
+
+int main(void) {
+    // Inicializa comunicação USB para debug
+    stdio_init_all();
+    
+    // Inicializa componentes básicos
+    configurar_led_rgb();
+    configurar_display_oled();
+    atualizar_tela(); // Mostra tela inicial
+
+    // Aguarda um tempo para estabilizar o sistema
+    sleep_ms(2500);
+    
+    // Inicializa todo o sistema
+    if (!inicializar_sistema_completo()) {
+        alterar_status_display("ERRO FATAL");
+        piscar_led_erro_critico(); // Trava aqui se houver erro
+    }
+
+    // Loop principal do programa
+    while (1) {
+        // Se está gravando E cartão SD conectado E chegou a hora da próxima medição
+        if (esta_gravando && cartao_sd_conectado && time_reached(proxima_medicao)) {
+            // Agenda próxima medição
+            proxima_medicao = make_timeout_time_ms(TEMPO_ENTRE_LEITURAS_MS);
+            // Grava dados do sensor
+            gravar_dados_do_sensor();
+        }
+        
+        // Pequena pausa para não sobrecarregar o processador
         sleep_ms(10);
     }
 }

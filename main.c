@@ -4,6 +4,7 @@
 #include "pico/stdlib.h"
 #include "pico/time.h"
 #include "hardware/i2c.h"
+#include "hardware/pwm.h"
 #include "ff.h"
 #include "f_util.h"
 #include "hw_config.h"
@@ -12,7 +13,7 @@
 #include "ssd1306.h"
 
 /*=================================================================
-   CONFIGURAÇÕES DE HARDWARE - Definem quais pinos usar
+  CONFIGURAÇÕES DE HARDWARE - Definem quais pinos usar
 =================================================================*/
 
 // Pinos do I²C para o sensor MPU6050
@@ -27,22 +28,32 @@
 #define ENDERECO_OLED       0x3C
 
 // Pinos dos botões de controle
-#define BOTAO_CARTAO_SD     5    // Liga/desliga cartão SD
-#define BOTAO_GRAVACAO      6    // Inicia/para gravação
-#define BOTAO_VALORES       22   // Cicla entre as telas (principal -> valores -> gráfico -> principal)
+#define BOTAO_CARTAO_SD     5   // Liga/desliga cartão SD
+#define BOTAO_GRAVACAO      6   // Inicia/para gravação
+#define BOTAO_VALORES       22  // Cicla entre as telas (principal -> valores -> gráfico -> principal)
 
 // Pinos do LED RGB para indicações visuais
 #define LED_VERMELHO        13
 #define LED_VERDE           11
 #define LED_AZUL            12
 
+// Pino do buzzer
+#define BUZZER_PIN          10  // Buzzer conectado no pino 10
+
 // Configurações de tempo
-#define TEMPO_ENTRE_LEITURAS_MS  1000    // 1 segundo entre cada medição
-#define TEMPO_DEBOUNCE_US        300000  // Evita múltiplos cliques nos botões
+#define TEMPO_ENTRE_LEITURAS_MS   1000    // 1 segundo entre cada medição
+#define TEMPO_DEBOUNCE_US         300000  // Evita múltiplos cliques nos botões
 #define TEMPO_ATUALIZACAO_VALORES_MS 500 // Atualiza valores dos sensores na tela
 
+// Configurações do buzzer (frequências alteradas para maior audibilidade)
+#define FREQ_BEEP_CURTO     3500    // Frequência dos beeps curtos (3.5kHz)
+#define FREQ_BEEP_LONGO     1000    // Frequência do beep longo (1.0kHz)
+#define DURACAO_BEEP_CURTO  100     // Duração do beep curto (100ms)
+#define DURACAO_BEEP_LONGO  500     // Duração do beep longo (500ms)
+#define PAUSA_ENTRE_BEEPS   150     // Pausa entre beeps múltiplos (150ms)
+
 /*=================================================================
-   ENUMS E DEFINIÇÕES
+  ENUMS E DEFINIÇÕES
 =================================================================*/
 
 // Define os tipos de tela disponíveis
@@ -53,8 +64,17 @@ typedef enum {
     TOTAL_TELAS = 3
 } tipo_tela_t;
 
+// Estados do buzzer não-bloqueante
+typedef enum {
+    BUZZER_IDLE = 0,
+    BUZZER_BEEP_CURTO,
+    BUZZER_PAUSA_DUPLO,
+    BUZZER_SEGUNDO_BEEP,
+    BUZZER_BEEP_LONGO
+} estado_buzzer_t;
+
 /*=================================================================
-   VARIÁVEIS GLOBAIS - Controlam o estado do sistema
+  VARIÁVEIS GLOBAIS - Controlam o estado do sistema
 =================================================================*/
 
 // Estados principais do sistema
@@ -76,8 +96,129 @@ static uint32_t numero_amostras_display = 0;
 // Dados mais recentes do sensor para exibição
 static mpu6050_data_t dados_sensor_atuais;
 
+// Variáveis do PWM para o buzzer
+static uint slice_buzzer;
+
+// Controle não-bloqueante do buzzer
+static estado_buzzer_t estado_buzzer = BUZZER_IDLE;
+static absolute_time_t tempo_buzzer;
+static bool eh_duplo_beep_flag = false; // Flag para controlar o beep duplo
+
 /*=================================================================
-   FUNÇÕES DO LED RGB - Indicam o estado do sistema
+  FUNÇÕES DO BUZZER - Indicações sonoras do sistema (NÃO-BLOQUEANTE)
+=================================================================*/
+
+// Configura o PWM para o buzzer
+static void configurar_buzzer(void) {
+    gpio_set_function(BUZZER_PIN, GPIO_FUNC_PWM);
+    slice_buzzer = pwm_gpio_to_slice_num(BUZZER_PIN);
+    
+    // Para gerar frequências mais baixas de forma audível, é preciso diminuir
+    // a frequência do clock do PWM. O clock do sistema é 125MHz. Dividindo por 25, 
+    // temos um clock de 5MHz para o PWM, permitindo gerar uma gama maior de frequências.
+    pwm_config config = pwm_get_default_config();
+    pwm_config_set_clkdiv(&config, 25.0f); 
+    pwm_init(slice_buzzer, &config, false); // Aplica configuração, mas não inicia
+
+    pwm_set_chan_level(slice_buzzer, PWM_CHAN_A, 0); // Começa desligado
+    pwm_set_enabled(slice_buzzer, true); // Habilita o slice do PWM
+}
+
+// Liga o buzzer com frequência específica
+static void ligar_buzzer(uint32_t frequencia) {
+    if (frequencia == 0) {
+        pwm_set_chan_level(slice_buzzer, PWM_CHAN_A, 0);
+        return;
+    }
+    
+    // O clock do PWM foi dividido por 25 na configuração inicial (resultando em 5MHz).
+    const float div_clock_freq = 5000000.0f;
+    // O contador do PWM (wrap) é de 16 bits (0-65535).
+    // A fórmula é: wrap = (clock_dividido / frequencia) - 1
+    uint16_t wrap = (uint16_t)(div_clock_freq / frequencia) - 1;
+    
+    pwm_set_wrap(slice_buzzer, wrap);
+    pwm_set_chan_level(slice_buzzer, PWM_CHAN_A, wrap / 2); // 50% duty cycle para volume máximo
+}
+
+// Desliga o buzzer
+static void desligar_buzzer(void) {
+    pwm_set_chan_level(slice_buzzer, PWM_CHAN_A, 0);
+}
+
+// Inicia um beep curto (não-bloqueante)
+static void iniciar_beep_curto(void) {
+    if (estado_buzzer != BUZZER_IDLE) return;
+    estado_buzzer = BUZZER_BEEP_CURTO;
+    tempo_buzzer = make_timeout_time_ms(DURACAO_BEEP_CURTO);
+    ligar_buzzer(FREQ_BEEP_CURTO);
+}
+
+// Inicia dois beeps curtos (não-bloqueante)
+static void iniciar_dois_beeps(void) {
+    if (estado_buzzer != BUZZER_IDLE) return; // Não interrompe outro som
+    eh_duplo_beep_flag = true; // Ativa a flag para o segundo beep
+    estado_buzzer = BUZZER_BEEP_CURTO;
+    tempo_buzzer = make_timeout_time_ms(DURACAO_BEEP_CURTO);
+    ligar_buzzer(FREQ_BEEP_CURTO);
+}
+
+// Inicia um beep longo (não-bloqueante)
+static void iniciar_beep_longo(void) {
+    if (estado_buzzer != BUZZER_IDLE) return;
+    estado_buzzer = BUZZER_BEEP_LONGO;
+    tempo_buzzer = make_timeout_time_ms(DURACAO_BEEP_LONGO);
+    ligar_buzzer(FREQ_BEEP_LONGO);
+}
+
+// Atualiza o estado do buzzer (chamada no loop principal)
+static void atualizar_buzzer(void) {
+    if (estado_buzzer == BUZZER_IDLE) return;
+    
+    if (time_reached(tempo_buzzer)) {
+        switch (estado_buzzer) {
+            case BUZZER_BEEP_CURTO:
+                desligar_buzzer();
+                if (eh_duplo_beep_flag) {
+                    // Se a flag de beep duplo estiver ativa, inicia a pausa
+                    estado_buzzer = BUZZER_PAUSA_DUPLO;
+                    tempo_buzzer = make_timeout_time_ms(PAUSA_ENTRE_BEEPS);
+                    eh_duplo_beep_flag = false; // Reseta a flag
+                } else {
+                    // Se não, foi um beep único
+                    estado_buzzer = BUZZER_IDLE;
+                }
+                break;
+                
+            case BUZZER_PAUSA_DUPLO:
+                // Pausa terminou, inicia o segundo beep
+                estado_buzzer = BUZZER_SEGUNDO_BEEP;
+                tempo_buzzer = make_timeout_time_ms(DURACAO_BEEP_CURTO);
+                ligar_buzzer(FREQ_BEEP_CURTO);
+                break;
+                
+            case BUZZER_SEGUNDO_BEEP:
+                // Segundo beep terminou
+                desligar_buzzer();
+                estado_buzzer = BUZZER_IDLE;
+                break;
+                
+            case BUZZER_BEEP_LONGO:
+                // Beep longo terminou
+                desligar_buzzer();
+                estado_buzzer = BUZZER_IDLE;
+                break;
+                
+            default:
+                estado_buzzer = BUZZER_IDLE;
+                desligar_buzzer();
+                break;
+        }
+    }
+}
+
+/*=================================================================
+  FUNÇÕES DO LED RGB - Indicam o estado do sistema
 =================================================================*/
 
 // Configura os pinos do LED RGB como saídas
@@ -100,6 +241,15 @@ static void definir_cor_led(bool vermelho, bool verde, bool azul) {
 
 // Pisca LED roxo quando há erro crítico (trava o sistema)
 static void piscar_led_erro_critico(void) {
+    // Emite beep longo de erro antes de travar
+    iniciar_beep_longo();
+    
+    // Aguarda o beep terminar antes de travar
+    while (estado_buzzer != BUZZER_IDLE) {
+        atualizar_buzzer();
+        sleep_ms(10);
+    }
+    
     while (1) {
         definir_cor_led(true, false, true);  // Roxo = erro
         sleep_ms(250);
@@ -109,7 +259,7 @@ static void piscar_led_erro_critico(void) {
 }
 
 /*=================================================================
-   FUNÇÕES DO DISPLAY OLED - Interface visual do usuário
+  FUNÇÕES DO DISPLAY OLED - Interface visual do usuário
 =================================================================*/
 
 // Configura e inicializa o display OLED
@@ -273,8 +423,6 @@ static void mostrar_tela_grafico_aceleracao(void) {
     ssd1306_draw_string(&display_oled, "Y", 2, y_ay, false);
     ssd1306_draw_string(&display_oled, "Z", 2, y_az, false);
 
-    // Valores numéricos das acelerações (à direita)
-
     // Marcadores de escala (-10, 0, +10)
     ssd1306_draw_string(&display_oled, "-10", 0, 56, false);
     ssd1306_draw_string(&display_oled, "0", 61, 56, false);
@@ -339,7 +487,7 @@ static void ciclar_telas(void) {
 }
 
 /*=================================================================
-   FUNÇÕES DO CARTÃO SD - Gerenciam armazenamento de dados
+  FUNÇÕES DO CARTÃO SD - Gerenciam armazenamento de dados
 =================================================================*/
 
 // Busca um cartão SD específico pelo nome
@@ -409,7 +557,7 @@ static void desconectar_cartao_sd(void) {
 }
 
 /*=================================================================
-   FUNÇÕES DE GRAVAÇÃO DE DADOS
+  FUNÇÕES DE GRAVAÇÃO DE DADOS
 =================================================================*/
 
 // Cria o arquivo CSV com o cabeçalho das colunas
@@ -468,7 +616,7 @@ static void gravar_dados_do_sensor(void) {
 }
 
 /*=================================================================
-   FUNÇÕES DE CONTROLE DA GRAVAÇÃO
+  FUNÇÕES DE CONTROLE DA GRAVAÇÃO
 =================================================================*/
 
 // Inicia o processo de coleta e gravação de dados
@@ -484,6 +632,9 @@ static void iniciar_gravacao_dados(void) {
     alterar_status_display("GRAVANDO");
     alterar_mensagem_display("");
     proxima_medicao = get_absolute_time();
+    
+    // Emite beep curto ao iniciar a coleta (não-bloqueante)
+    iniciar_beep_curto();
 }
 
 // Para o processo de coleta e gravação de dados
@@ -494,10 +645,13 @@ static void parar_gravacao_dados(void) {
     definir_cor_led(false, true, false); // LED verde = parado
     alterar_status_display("PAUSADO");
     alterar_mensagem_display("");
+    
+    // Emite dois beeps curtos ao parar a coleta (não-bloqueante)
+    iniciar_dois_beeps();
 }
 
 /*=================================================================
-   FUNÇÕES DOS BOTÕES DE CONTROLE
+  FUNÇÕES DOS BOTÕES DE CONTROLE
 =================================================================*/
 
 // Função chamada quando um botão é pressionado
@@ -549,7 +703,7 @@ static void configurar_botoes_controle(void) {
 }
 
 /*=================================================================
-   FUNÇÃO DE INICIALIZAÇÃO DO SISTEMA
+  FUNÇÃO DE INICIALIZAÇÃO DO SISTEMA
 =================================================================*/
 
 // Inicializa todos os componentes do sistema
@@ -592,7 +746,7 @@ static bool inicializar_sistema_completo(void) {
 }
 
 /*=================================================================
-   FUNÇÃO PRINCIPAL DO PROGRAMA
+  FUNÇÃO PRINCIPAL DO PROGRAMA
 =================================================================*/
 
 int main(void) {
@@ -601,6 +755,7 @@ int main(void) {
     
     // Inicializa componentes básicos
     configurar_led_rgb();
+    configurar_buzzer();  // Inicializa o buzzer
     configurar_display_oled();
     atualizar_tela(); // Mostra tela inicial
 
@@ -610,7 +765,7 @@ int main(void) {
     // Inicializa todo o sistema
     if (!inicializar_sistema_completo()) {
         alterar_status_display("ERRO FATAL");
-        piscar_led_erro_critico(); // Trava aqui se houver erro
+        piscar_led_erro_critico(); // Trava aqui se houver erro (com beep longo)
     }
 
     // Inicializa tempo para primeira atualização de valores
@@ -618,6 +773,9 @@ int main(void) {
 
     // Loop principal do programa
     while (1) {
+        // ATUALIZA O BUZZER PRIMEIRO (não-bloqueante)
+        atualizar_buzzer();
+        
         // Se está na tela de valores ou gráfico, atualiza os dados periodicamente
         if ((tela_atual == TELA_VALORES || tela_atual == TELA_GRAFICO) && 
             time_reached(proxima_atualizacao_valores)) {

@@ -87,6 +87,7 @@ target_link_libraries(${PROJECT_NAME} PRIVATE
     hardware_pio     # Para PIO (ws2812)
     hardware_gpio    # Para GPIOs e IRQs (botões)
     pico_bootrom     # Para reset_usb_boot
+    hardware_i2c
 )
 
 # --- Configuração de Saída Padrão (stdio) e Ficheiros Finais ---

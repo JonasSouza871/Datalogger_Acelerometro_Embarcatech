@@ -217,7 +217,7 @@ void parar_coleta(void) {
     if (!coletando) return;
     coletando = false;
     led_set_color(false, true, false);
-    oled_status("Aguardando...");
+    oled_status("Coleta pausada");          /* ← mensagem solicitada */
     printf("✓ Coleta parada.\n");
 }
 

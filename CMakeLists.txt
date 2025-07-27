@@ -27,7 +27,7 @@ pico_sdk_init()
 
 # Criação do executável com todos os arquivos fonte
 add_executable(${PROJECT_NAME}
-    Main.c
+    main.c
     lib/hw_config.c
     lib/mpu6050.c
     

@@ -48,8 +48,10 @@
 // Configurações do buzzer (frequências alteradas para maior audibilidade)
 #define FREQ_BEEP_CURTO     3500    // Frequência dos beeps curtos (3.5kHz)
 #define FREQ_BEEP_LONGO     1000    // Frequência do beep longo (1.0kHz)
+#define FREQ_BEEP_PRONTO    2500    // Frequência do beep de sistema pronto (2.5kHz)
 #define DURACAO_BEEP_CURTO  100     // Duração do beep curto (100ms)
 #define DURACAO_BEEP_LONGO  500     // Duração do beep longo (500ms)
+#define DURACAO_BEEP_PRONTO 250     // Duração do beep de sistema pronto (250ms)
 #define PAUSA_ENTRE_BEEPS   150     // Pausa entre beeps múltiplos (150ms)
 
 /*=================================================================
@@ -70,7 +72,8 @@ typedef enum {
     BUZZER_BEEP_CURTO,
     BUZZER_PAUSA_DUPLO,
     BUZZER_SEGUNDO_BEEP,
-    BUZZER_BEEP_LONGO
+    BUZZER_BEEP_LONGO,
+    BUZZER_BEEP_PRONTO
 } estado_buzzer_t;
 
 /*=================================================================
@@ -171,6 +174,14 @@ static void iniciar_beep_longo(void) {
     ligar_buzzer(FREQ_BEEP_LONGO);
 }
 
+// Inicia o beep de "sistema pronto" (não-bloqueante)
+static void iniciar_beep_pronto(void) {
+    if (estado_buzzer != BUZZER_IDLE) return;
+    estado_buzzer = BUZZER_BEEP_PRONTO;
+    tempo_buzzer = make_timeout_time_ms(DURACAO_BEEP_PRONTO);
+    ligar_buzzer(FREQ_BEEP_PRONTO);
+}
+
 // Atualiza o estado do buzzer (chamada no loop principal)
 static void atualizar_buzzer(void) {
     if (estado_buzzer == BUZZER_IDLE) return;
@@ -205,6 +216,12 @@ static void atualizar_buzzer(void) {
                 
             case BUZZER_BEEP_LONGO:
                 // Beep longo terminou
+                desligar_buzzer();
+                estado_buzzer = BUZZER_IDLE;
+                break;
+
+            case BUZZER_BEEP_PRONTO:
+                // Beep de sistema pronto terminou
                 desligar_buzzer();
                 estado_buzzer = BUZZER_IDLE;
                 break;
@@ -742,6 +759,7 @@ static bool inicializar_sistema_completo(void) {
     // Sistema pronto para uso
     definir_cor_led(false, true, false); // LED verde = pronto
     alterar_status_display("PRONTO");
+    iniciar_beep_pronto(); // Emite beep para indicar que o sistema está pronto
     return true;
 }
 

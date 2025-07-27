@@ -3,6 +3,7 @@
 #include "pico/stdlib.h"
 #include "pico/time.h"
 #include "hardware/i2c.h"
+#include "hardware/pwm.h" // Incluído para usar PWM com o buzzer
 #include "ff.h"
 #include "f_util.h"
 #include "hw_config.h"
@@ -21,10 +22,13 @@
 #define INTERVALO_COLETA_MS 1000
 #define DEBOUNCE_US 300000
 
-// NOVO: Definição dos pinos do LED RGB
+// Definição dos pinos do LED RGB
 #define LED_GREEN_PIN 11
 #define LED_BLUE_PIN 12
 #define LED_RED_PIN 13
+
+// NOVO: Definição do pino do Buzzer
+#define BUZZER_PIN 10
 
 // =============== VARIÁVEIS GLOBAIS ===============
 static bool coletando = false;
@@ -33,16 +37,9 @@ static absolute_time_t proximo_log;
 static uint32_t numero_amostra = 0;
 
 // =============== PROTÓTIPOS DE FUNÇÕES ===============
-// Declaração antecipada para resolver o aviso de "implicit declaration",
-// já que desmontar_cartao_sd() é definida antes de parar_coleta().
 void parar_coleta();
 
-
-// =============== NOVAS FUNÇÕES DE CONTROLE DO LED ===============
-
-/**
- * @brief Inicializa os pinos do LED RGB como saídas.
- */
+// =============== FUNÇÕES DE CONTROLE DO LED ===============
 void led_init() {
     gpio_init(LED_RED_PIN);
     gpio_init(LED_GREEN_PIN);
@@ -52,25 +49,67 @@ void led_init() {
     gpio_set_dir(LED_BLUE_PIN, GPIO_OUT);
 }
 
-/**
- * @brief Define a cor do LED.
- * Assume LED de catodo comum (1 = LIGADO, 0 = DESLIGADO).
- * @param r true para ligar o vermelho
- * @param g true para ligar o verde
- * @param b true para ligar o azul
- */
 void led_set_color(bool r, bool g, bool b) {
     gpio_put(LED_RED_PIN, r);
     gpio_put(LED_GREEN_PIN, g);
     gpio_put(LED_BLUE_PIN, b);
 }
 
+// =============== NOVAS FUNÇÕES DE CONTROLE DO BUZZER ===============
+
 /**
- * @brief Pisca o LED na cor roxa para indicar um erro fatal.
- * Esta função entra em um loop infinito.
+ * @brief Toca um tom no buzzer com uma frequência e duração específicas.
+ * @param freq Frequência do tom em Hz.
+ * @param duration_ms Duração do tom em milissegundos.
  */
+void play_tone(uint freq, uint duration_ms) {
+    // Configura o pino do buzzer para a função PWM
+    gpio_set_function(BUZZER_PIN, GPIO_FUNC_PWM);
+    uint slice_num = pwm_gpio_to_slice_num(BUZZER_PIN);
+
+    // Calcula o divisor do clock e o valor de wrap para a frequência desejada
+    // Clock do sistema = 125MHz. Um divisor de 125 resulta em um clock de 1MHz para o PWM.
+    float div = 125.0f;
+    uint32_t wrap = 1000000 / freq;
+    pwm_set_clkdiv(slice_num, div);
+    pwm_set_wrap(slice_num, wrap);
+
+    // Define o duty cycle para 50% (metade do valor de wrap)
+    pwm_set_chan_level(slice_num, PWM_CHAN_B, wrap / 2);
+
+    // Ativa o PWM, toca o som, e depois desativa
+    pwm_set_enabled(slice_num, true);
+    sleep_ms(duration_ms);
+    pwm_set_enabled(slice_num, false);
+}
+
+/**
+ * @brief Toca um beep curto para indicar o início da captura.
+ */
+void play_start_beep() {
+    play_tone(1500, 100); // Tom de 1.5kHz por 100ms
+}
+
+/**
+ * @brief Toca dois beeps curtos para indicar o fim da captura.
+ */
+void play_stop_beep() {
+    play_tone(1500, 100); // Primeiro beep
+    sleep_ms(50);
+    play_tone(1500, 100); // Segundo beep
+}
+
+/**
+ * @brief Toca um tom longo e grave para indicar um erro.
+ */
+void play_error_beep() {
+    play_tone(500, 500); // Tom de 500Hz por 500ms
+}
+
+
 void led_error_blink() {
     while (true) {
+        play_error_beep(); // Toca o som de erro
         led_set_color(true, false, true); // Roxo
         sleep_ms(250);
         led_set_color(false, false, false); // Desligado
@@ -78,7 +117,7 @@ void led_error_blink() {
     }
 }
 
-// Funções auxiliares para o SD Card (devem estar no seu código)
+// Funções auxiliares para o SD Card
 static sd_card_t* buscar_sd_por_nome(const char *nome) {
     for (size_t i = 0; i < sd_get_num(); ++i)
         if (strcmp(sd_get_by_num(i)->pcName, nome) == 0)
@@ -118,7 +157,7 @@ bool montar_cartao_sd() {
 void desmontar_cartao_sd() {
     if (!sd_montado) return;
     if (coletando) {
-        parar_coleta(); // Usa a função para garantir que o LED mude de cor
+        parar_coleta();
     }
     const char *drive = sd_get_by_num(0)->pcName;
     printf("Desmontando SD...\n");
@@ -126,29 +165,25 @@ void desmontar_cartao_sd() {
     sd_card_t *cartao = buscar_sd_por_nome(drive);
     cartao->mounted = false;
     sd_montado = false;
-    led_set_color(false, false, false); // Desliga o LED
+    led_set_color(false, false, false);
     printf("✓ SD desmontado com segurança.\n");
 }
 
-/**
- * @brief Salva uma amostra do MPU6050 no arquivo CSV.
- */
 void salvar_amostra_mpu6050() {
     if (!sd_montado) {
         printf("Erro: SD não montado! Parando coleta.\n");
         coletando = false;
-        led_error_blink(); // Erro durante a coleta
+        led_error_blink();
         return;
     }
 
-    // MODIFICADO: Pisca azul para indicar acesso ao SD
-    led_set_color(false, false, true); // Azul
-    sleep_ms(50); // Mantém azul por um instante
+    led_set_color(false, false, true);
+    sleep_ms(50);
 
     FIL arquivo;
     if (f_open(&arquivo, "dados_mpu.csv", FA_WRITE | FA_OPEN_APPEND) != FR_OK) {
         printf("Erro ao abrir arquivo 'dados_mpu.csv'!\n");
-        led_error_blink(); // Erro de escrita no SD
+        led_error_blink();
         return;
     }
 
@@ -165,8 +200,7 @@ void salvar_amostra_mpu6050() {
     f_write(&arquivo, buffer, strlen(buffer), NULL);
     f_close(&arquivo);
 
-    // MODIFICADO: Restaura a cor vermelha de coleta
-    led_set_color(true, false, false); // Vermelho
+    led_set_color(true, false, false);
 
     printf("Amostra %lu | Acc(X,Y,Z): %.2f, %.2f, %.2f | Gyro(X,Y,Z): %.2f, %.2f, %.2f | Temp: %.2fC\n",
            numero_amostra,
@@ -194,7 +228,8 @@ void iniciar_coleta() {
     }
     if (coletando) return;
     coletando = true;
-    led_set_color(true, false, false); // MODIFICADO: Vermelho para coleta
+    led_set_color(true, false, false);
+    play_start_beep(); // MODIFICADO: Toca um beep ao iniciar
     proximo_log = get_absolute_time();
     printf("✓ Coleta INICIADA!\n");
 }
@@ -202,7 +237,8 @@ void iniciar_coleta() {
 void parar_coleta() {
     if (!coletando) return;
     coletando = false;
-    led_set_color(false, true, false); // MODIFICADO: Verde para pronto
+    led_set_color(false, true, false);
+    play_stop_beep(); // MODIFICADO: Toca dois beeps ao parar
     printf("✓ Coleta PARADA.\n");
 }
 
@@ -235,21 +271,18 @@ void configurar_botoes() {
     gpio_set_irq_enabled_with_callback(BOTAO_COLETA, GPIO_IRQ_EDGE_FALL, true, &manipular_botoes);
 }
 
-/**
- * @brief Inicializa todo o sistema
- */
 bool inicializar_sistema() {
     printf("\n=== Datalogger MPU6050 - Sistema Iniciando ===\n");
-    led_set_color(true, true, false); // MODIFICADO: Amarelo para inicializando
+    led_set_color(true, true, false);
 
     if (!sd_init_driver()) {
         printf("ERRO CRÍTICO: Falha ao inicializar driver do SD Card.\n");
-        return false; // Retorna false para ser tratado no main
+        return false;
     }
 
     if (!montar_cartao_sd()) {
         printf("ERRO CRÍTICO: Não foi possível montar o SD Card.\n");
-        return false; // Retorna false para ser tratado no main
+        return false;
     }
 
     i2c_init(I2C_PORT, 400 * 1000);
@@ -262,7 +295,7 @@ bool inicializar_sistema() {
     configurar_botoes();
     criar_cabecalho_csv();
 
-    led_set_color(false, true, false); // MODIFICADO: Verde para sistema pronto
+    led_set_color(false, true, false);
     return true;
 }
 
@@ -277,12 +310,13 @@ void mostrar_instrucoes() {
 // =============== PROGRAMA PRINCIPAL ===============
 int main() {
     stdio_init_all();
-    led_init(); // NOVO: Inicializa os pinos do LED
+    led_init();
+    // A inicialização do pino do buzzer é feita dentro da função play_tone
     sleep_ms(3000);
 
     if (!inicializar_sistema()) {
         printf("Falha na inicialização. Sistema interrompido.\n");
-        led_error_blink(); // MODIFICADO: Pisca roxo em caso de erro fatal
+        led_error_blink();
     }
 
     mostrar_instrucoes();

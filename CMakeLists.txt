@@ -32,7 +32,7 @@ pico_sdk_init()
 # Criamos o executável PRIMEIRO, com TODOS os ficheiros de código-fonte (.c)
 add_executable(${PROJECT_NAME}
     # Ficheiros principais
-    Main.c
+    main.c
     lib/hw_config.c
 
     # --- BIBLIOTECA MPU6050 ---
@@ -91,6 +91,7 @@ target_link_libraries(${PROJECT_NAME} PRIVATE
     hardware_pio     # Para PIO (ws2812)
     hardware_gpio    # Para GPIOs e IRQs (botões)
     pico_bootrom     # Para reset_usb_boot
+    hardware_pwm
 )
 
 # --- Configuração de Saída Padrão (stdio) e Ficheiros Finais ---

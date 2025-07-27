@@ -11,17 +11,14 @@
 #include "mpu6050.h"
 #include "ssd1306.h"
 
-
 /*=================================================================
    CONFIGURAÇÕES DE HARDWARE - Definem quais pinos usar
 =================================================================*/
-
 
 // Pinos do I²C para o sensor MPU6050
 #define I2C_SENSOR_PORTA    i2c0
 #define I2C_SENSOR_SDA      0
 #define I2C_SENSOR_SCL      1
-
 
 // Pinos do I²C para o display OLED
 #define I2C_DISPLAY_PORTA   i2c1
@@ -29,29 +26,36 @@
 #define I2C_DISPLAY_SCL     15
 #define ENDERECO_OLED       0x3C
 
-
 // Pinos dos botões de controle
 #define BOTAO_CARTAO_SD     5    // Liga/desliga cartão SD
 #define BOTAO_GRAVACAO      6    // Inicia/para gravação
-#define BOTAO_VALORES       22   // Alterna entre telas
-
+#define BOTAO_VALORES       22   // Cicla entre as telas (principal -> valores -> gráfico -> principal)
 
 // Pinos do LED RGB para indicações visuais
 #define LED_VERMELHO        13
 #define LED_VERDE           11
 #define LED_AZUL            12
 
-
 // Configurações de tempo
 #define TEMPO_ENTRE_LEITURAS_MS  1000    // 1 segundo entre cada medição
 #define TEMPO_DEBOUNCE_US        300000  // Evita múltiplos cliques nos botões
 #define TEMPO_ATUALIZACAO_VALORES_MS 500 // Atualiza valores dos sensores na tela
 
+/*=================================================================
+   ENUMS E DEFINIÇÕES
+=================================================================*/
+
+// Define os tipos de tela disponíveis
+typedef enum {
+    TELA_PRINCIPAL = 0,
+    TELA_VALORES = 1,
+    TELA_GRAFICO = 2,
+    TOTAL_TELAS = 3
+} tipo_tela_t;
 
 /*=================================================================
    VARIÁVEIS GLOBAIS - Controlam o estado do sistema
 =================================================================*/
-
 
 // Estados principais do sistema
 static bool esta_gravando = false;
@@ -59,11 +63,9 @@ static bool cartao_sd_conectado = false;
 static absolute_time_t proxima_medicao;
 static uint32_t contador_amostras = 0;
 
-
-// Controle das telas do display (0=principal, 1=valores, 2=gráfico)
-static uint8_t tela_atual = 0;
+// Controle das telas do display
+static tipo_tela_t tela_atual = TELA_PRINCIPAL;
 static absolute_time_t proxima_atualizacao_valores;
-
 
 // Variáveis do display OLED
 static ssd1306_t display_oled;
@@ -71,15 +73,12 @@ static char texto_status[18] = "INICIANDO...";
 static char texto_mensagem[18] = "";
 static uint32_t numero_amostras_display = 0;
 
-
 // Dados mais recentes do sensor para exibição
 static mpu6050_data_t dados_sensor_atuais;
-
 
 /*=================================================================
    FUNÇÕES DO LED RGB - Indicam o estado do sistema
 =================================================================*/
-
 
 // Configura os pinos do LED RGB como saídas
 static void configurar_led_rgb(void) {
@@ -92,14 +91,12 @@ static void configurar_led_rgb(void) {
     gpio_set_dir(LED_AZUL, GPIO_OUT);
 }
 
-
 // Liga/desliga as cores do LED RGB
 static void definir_cor_led(bool vermelho, bool verde, bool azul) {
     gpio_put(LED_VERMELHO, vermelho);
     gpio_put(LED_VERDE, verde);
     gpio_put(LED_AZUL, azul);
 }
-
 
 // Pisca LED roxo quando há erro crítico (trava o sistema)
 static void piscar_led_erro_critico(void) {
@@ -111,11 +108,9 @@ static void piscar_led_erro_critico(void) {
     }
 }
 
-
 /*=================================================================
    FUNÇÕES DO DISPLAY OLED - Interface visual do usuário
 =================================================================*/
-
 
 // Configura e inicializa o display OLED
 static void configurar_display_oled(void) {
@@ -126,207 +121,214 @@ static void configurar_display_oled(void) {
     gpio_pull_up(I2C_DISPLAY_SDA);
     gpio_pull_up(I2C_DISPLAY_SCL);
 
-
     // Inicializa o display OLED 128x64 pixels
     ssd1306_init(&display_oled, 128, 64, false, ENDERECO_OLED, I2C_DISPLAY_PORTA);
     ssd1306_config(&display_oled);
 }
-
 
 // Mostra a tela principal com status do sistema
 static void mostrar_tela_principal(void) {
     // Limpa toda a tela
     ssd1306_fill(&display_oled, false);
 
-
     // Título do sistema na parte superior
     ssd1306_draw_string(&display_oled, "MPU6050 LOGGER", 14, 1, false);
-
 
     // Desenha linhas horizontais para separar seções
     ssd1306_hline(&display_oled, 0, 127, 12, true);
     ssd1306_hline(&display_oled, 0, 127, 30, true);
     ssd1306_hline(&display_oled, 0, 127, 48, true);
 
-
     // Mostra o status atual do sistema
     char buffer_status[30];
     snprintf(buffer_status, sizeof(buffer_status), "STATUS:%s", texto_status);
     ssd1306_draw_string(&display_oled, buffer_status, 0, 16, false);
-
 
     // Mostra quantas amostras foram coletadas
     char buffer_amostras[30];
     snprintf(buffer_amostras, sizeof(buffer_amostras), "AMOSTRAS: %lu", numero_amostras_display);
     ssd1306_draw_string(&display_oled, buffer_amostras, 0, 34, false);
 
-
     // Mostra mensagens adicionais na parte inferior
     ssd1306_draw_string(&display_oled, texto_mensagem, 0, 52, false);
-
 
     // Envia tudo para o display físico
     ssd1306_send_data(&display_oled);
 }
-
 
 // Mostra a tela com os valores atuais dos sensores
 static void mostrar_tela_valores_sensores(void) {
     // Limpa toda a tela
     ssd1306_fill(&display_oled, false);
 
-
     // Título centralizado
-    ssd1306_draw_string(&display_oled, "valores", 46, 1, false);
-
+    ssd1306_draw_string(&display_oled, "VALORES", 46, 1, false);
 
     // Valores dos sensores com maior espaçamento vertical
     char linha[30];
     int y = 10;  // Posição inicial vertical
 
-
     snprintf(linha, sizeof(linha), "ax: %.2f", dados_sensor_atuais.accel_x);
     ssd1306_draw_string(&display_oled, linha, 0, y, false);
     y += 9;
-
 
     snprintf(linha, sizeof(linha), "ay: %.2f", dados_sensor_atuais.accel_y);
     ssd1306_draw_string(&display_oled, linha, 0, y, false);
     y += 9;
 
-
     snprintf(linha, sizeof(linha), "az: %.2f", dados_sensor_atuais.accel_z);
     ssd1306_draw_string(&display_oled, linha, 0, y, false);
     y += 9;
-
 
     snprintf(linha, sizeof(linha), "gx: %.2f", dados_sensor_atuais.gyro_x);
     ssd1306_draw_string(&display_oled, linha, 0, y, false);
     y += 9;
 
-
     snprintf(linha, sizeof(linha), "gy: %.2f", dados_sensor_atuais.gyro_y);
     ssd1306_draw_string(&display_oled, linha, 0, y, false);
     y += 9;
 
-
     snprintf(linha, sizeof(linha), "gz: %.2f", dados_sensor_atuais.gyro_z);
     ssd1306_draw_string(&display_oled, linha, 0, y, false);
 
-
     // Envia tudo para o display físico
     ssd1306_send_data(&display_oled);
 }
 
-
-// Função auxiliar para desenhar uma barra vertical
-static void desenhar_barra_vertical(int x, int largura, float valor, const char* label) {
-    // Normaliza o valor para a altura da tela (assumindo valores entre -2g e +2g)
-    // Mapeia de -2.0/+2.0 para 0-40 pixels de altura
-    float valor_normalizado = fabs(valor);
-    if (valor_normalizado > 2.0f) valor_normalizado = 2.0f;
+// Função auxiliar para converter valores de aceleração para pixels (barras horizontais)
+static int normalizar_aceleracao_para_pixels_horizontal(float valor_aceleracao) {
+    // Normaliza valores de -10g a +10g para largura de 0 a 60 pixels
+    const float ACCEL_MAX = 10.0f;  // Máximo esperado em g
+    const int LARGURA_MAXIMA_BARRA = 60;  // Largura máxima da barra em pixels
     
-    int altura_barra = (int)(valor_normalizado * 20.0f); // Máximo 40 pixels
-    int y_base = 50; // Base das barras
-    int y_topo = y_base - altura_barra;
+    // Limita o valor entre -ACCEL_MAX e +ACCEL_MAX
+    if (valor_aceleracao > ACCEL_MAX) valor_aceleracao = ACCEL_MAX;
+    if (valor_aceleracao < -ACCEL_MAX) valor_aceleracao = -ACCEL_MAX;
     
-    // Desenha a barra preenchida
-    for (int i = 0; i < largura; i++) {
-        ssd1306_vline(&display_oled, x + i, y_topo, y_base, true);
-    }
-    
-    // Desenha o contorno da barra
-    ssd1306_rect(&display_oled, x, y_topo, x + largura - 1, y_base, true);
-    
-    // Desenha o label embaixo da barra
-    ssd1306_draw_string(&display_oled, label, x + (largura/2) - 3, y_base + 4, false);
-    
-    // Mostra o valor numérico acima da barra
-    char valor_str[8];
-    snprintf(valor_str, sizeof(valor_str), "%.1f", valor);
-    ssd1306_draw_string(&display_oled, valor_str, x, y_topo - 10, false);
+    // Converte para pixels mantendo o sinal (positivo ou negativo)
+    float normalizado = valor_aceleracao / ACCEL_MAX;
+    return (int)(normalizado * LARGURA_MAXIMA_BARRA);
 }
 
-
-// Mostra a tela com gráfico de barras das acelerações
-static void mostrar_tela_grafico_barras(void) {
+// Mostra a tela com gráfico de barras horizontais das acelerações
+static void mostrar_tela_grafico_aceleracao(void) {
     // Limpa toda a tela
     ssd1306_fill(&display_oled, false);
-    
+
     // Título centralizado
-    ssd1306_draw_string(&display_oled, "ACELERACAO", 29, 1, false);
-    
-    // Linha horizontal separadora
+    ssd1306_draw_string(&display_oled, "GRAFICO", 44, 1, false);
+
+    // Linha separadora
     ssd1306_hline(&display_oled, 0, 127, 12, true);
-    
-    // Posições das barras (3 barras distribuídas na tela)
-    int espacamento = 128 / 3; // Divide a largura em 3 partes
-    int largura_barra = 20;
-    
-    // Posições X das barras (centralizadas em cada seção)
-    int x1 = (espacamento / 2) - (largura_barra / 2);           // Barra X
-    int x2 = espacamento + (espacamento / 2) - (largura_barra / 2);  // Barra Y  
-    int x3 = (2 * espacamento) + (espacamento / 2) - (largura_barra / 2); // Barra Z
-    
-    // Desenha as três barras
-    desenhar_barra_vertical(x1, largura_barra, dados_sensor_atuais.accel_x, "X");
-    desenhar_barra_vertical(x2, largura_barra, dados_sensor_atuais.accel_y, "Y");
-    desenhar_barra_vertical(x3, largura_barra, dados_sensor_atuais.accel_z, "Z");
-    
-    // Linha de referência (base das barras)
-    ssd1306_hline(&display_oled, 0, 127, 50, true);
-    
+
+    // Parâmetros das barras horizontais
+    const int ALTURA_BARRA = 6;  // Altura de cada barra
+    const int ESPACO_ENTRE_BARRAS = 4;  // Espaço entre barras
+    const int CENTRO_X = 64;  // Centro da tela (ponto zero)
+    const int LARGURA_MAXIMA = 60;  // Largura máxima de cada lado do centro
+
+    // Posições Y das barras
+    int y_ax = 20;  // Posição Y da barra de Accel_X
+    int y_ay = y_ax + ALTURA_BARRA + ESPACO_ENTRE_BARRAS;  // Accel_Y
+    int y_az = y_ay + ALTURA_BARRA + ESPACO_ENTRE_BARRAS;  // Accel_Z
+
+    // Calcula largura das barras baseado na aceleração (pode ser negativa)
+    int largura_ax = normalizar_aceleracao_para_pixels_horizontal(dados_sensor_atuais.accel_x);
+    int largura_ay = normalizar_aceleracao_para_pixels_horizontal(dados_sensor_atuais.accel_y);
+    int largura_az = normalizar_aceleracao_para_pixels_horizontal(dados_sensor_atuais.accel_z);
+
+    // Desenha linha vertical central (referência zero)
+    ssd1306_vline(&display_oled, CENTRO_X, 15, 55, true);
+
+    // Desenha as barras horizontais
+    // Barra Accel_X
+    if (largura_ax != 0) {
+        int inicio_x = (largura_ax > 0) ? CENTRO_X : CENTRO_X + largura_ax;
+        int fim_x = (largura_ax > 0) ? CENTRO_X + largura_ax : CENTRO_X;
+        for (int i = 0; i < ALTURA_BARRA; i++) {
+            ssd1306_hline(&display_oled, inicio_x, fim_x, y_ax + i, true);
+        }
+    }
+
+    // Barra Accel_Y
+    if (largura_ay != 0) {
+        int inicio_x = (largura_ay > 0) ? CENTRO_X : CENTRO_X + largura_ay;
+        int fim_x = (largura_ay > 0) ? CENTRO_X + largura_ay : CENTRO_X;
+        for (int i = 0; i < ALTURA_BARRA; i++) {
+            ssd1306_hline(&display_oled, inicio_x, fim_x, y_ay + i, true);
+        }
+    }
+
+    // Barra Accel_Z
+    if (largura_az != 0) {
+        int inicio_x = (largura_az > 0) ? CENTRO_X : CENTRO_X + largura_az;
+        int fim_x = (largura_az > 0) ? CENTRO_X + largura_az : CENTRO_X;
+        for (int i = 0; i < ALTURA_BARRA; i++) {
+            ssd1306_hline(&display_oled, inicio_x, fim_x, y_az + i, true);
+        }
+    }
+
+    // Labels das barras (à esquerda)
+    ssd1306_draw_string(&display_oled, "X", 2, y_ax, false);
+    ssd1306_draw_string(&display_oled, "Y", 2, y_ay, false);
+    ssd1306_draw_string(&display_oled, "Z", 2, y_az, false);
+
+    // Valores numéricos das acelerações (à direita)
+
+    // Marcadores de escala (-10, 0, +10)
+    ssd1306_draw_string(&display_oled, "-10", 0, 56, false);
+    ssd1306_draw_string(&display_oled, "0", 61, 56, false);
+    ssd1306_draw_string(&display_oled, "+10", 110, 56, false);
+
     // Envia tudo para o display físico
     ssd1306_send_data(&display_oled);
 }
-
 
 // Atualiza a tela do display baseado no estado atual
 static void atualizar_tela(void) {
     switch (tela_atual) {
-        case 0:
+        case TELA_PRINCIPAL:
             mostrar_tela_principal();
             break;
-        case 1:
+        case TELA_VALORES:
             mostrar_tela_valores_sensores();
             break;
-        case 2:
-            mostrar_tela_grafico_barras();
+        case TELA_GRAFICO:
+            mostrar_tela_grafico_aceleracao();
+            break;
+        default:
+            mostrar_tela_principal();
             break;
     }
 }
-
 
 // Funções auxiliares para atualizar informações na tela
 static void alterar_status_display(const char *novo_status) {
     strncpy(texto_status, novo_status, sizeof(texto_status) - 1);
-    if (tela_atual == 0) {
+    if (tela_atual == TELA_PRINCIPAL) {
         atualizar_tela();
     }
 }
-
 
 static void alterar_mensagem_display(const char *nova_mensagem) {
     strncpy(texto_mensagem, nova_mensagem, sizeof(texto_mensagem) - 1);
-    if (tela_atual == 0) {
+    if (tela_atual == TELA_PRINCIPAL) {
         atualizar_tela();
     }
 }
-
 
 static void alterar_contador_amostras_display(uint32_t numero) {
     numero_amostras_display = numero;
-    if (tela_atual == 0) {
+    if (tela_atual == TELA_PRINCIPAL) {
         atualizar_tela();
     }
 }
 
-
-// Alterna entre as três telas (principal -> valores -> gráfico -> principal)
-static void alternar_tela(void) {
-    tela_atual = (tela_atual + 1) % 3; // Cicla entre 0, 1, 2
+// Cicla entre as telas: principal -> valores -> gráfico -> principal
+static void ciclar_telas(void) {
+    tela_atual = (tela_atual + 1) % TOTAL_TELAS;
     
-    if (tela_atual == 1 || tela_atual == 2) {
+    if (tela_atual != TELA_PRINCIPAL) {
         // Lê dados atuais do sensor para exibição
         mpu6050_read_data(&dados_sensor_atuais);
         // Agenda primeira atualização
@@ -336,11 +338,9 @@ static void alternar_tela(void) {
     atualizar_tela();
 }
 
-
 /*=================================================================
    FUNÇÕES DO CARTÃO SD - Gerenciam armazenamento de dados
 =================================================================*/
-
 
 // Busca um cartão SD específico pelo nome
 static sd_card_t *buscar_cartao_sd_por_nome(const char *nome) {
@@ -352,7 +352,6 @@ static sd_card_t *buscar_cartao_sd_por_nome(const char *nome) {
     return NULL;
 }
 
-
 // Busca sistema de arquivos do cartão SD pelo nome
 static FATFS *buscar_sistema_arquivos_por_nome(const char *nome) {
     for (size_t i = 0; i < sd_get_num(); ++i) {
@@ -363,11 +362,9 @@ static FATFS *buscar_sistema_arquivos_por_nome(const char *nome) {
     return NULL;
 }
 
-
 // Conecta e monta o cartão SD para uso
 static bool conectar_cartao_sd(void) {
     if (cartao_sd_conectado) return true;
-
 
     const char *nome_drive = sd_get_by_num(0)->pcName;
     FATFS *sistema_arquivos = buscar_sistema_arquivos_por_nome(nome_drive);
@@ -377,7 +374,6 @@ static bool conectar_cartao_sd(void) {
         return false;
     }
 
-
     // Tenta montar o cartão SD
     FRESULT resultado = f_mount(sistema_arquivos, nome_drive, 1);
     if (resultado != FR_OK) {
@@ -385,18 +381,15 @@ static bool conectar_cartao_sd(void) {
         return false;
     }
 
-
     buscar_cartao_sd_por_nome(nome_drive)->mounted = true;
     cartao_sd_conectado = true;
     printf("Cartão SD conectado com sucesso.\n");
     return true;
 }
 
-
 // Desconecta o cartão SD de forma segura
 static void desconectar_cartao_sd(void) {
     if (!cartao_sd_conectado) return;
-
 
     // Para a gravação se estiver ativa
     if (esta_gravando) {
@@ -404,12 +397,10 @@ static void desconectar_cartao_sd(void) {
         definir_cor_led(false, true, false); // LED verde = parado
     }
 
-
     const char *nome_drive = sd_get_by_num(0)->pcName;
     f_unmount(nome_drive);
     buscar_cartao_sd_por_nome(nome_drive)->mounted = false;
     cartao_sd_conectado = false;
-
 
     definir_cor_led(false, false, false); // LED apagado
     alterar_status_display("SD OFF");
@@ -417,11 +408,9 @@ static void desconectar_cartao_sd(void) {
     printf("Cartão SD desconectado.\n");
 }
 
-
 /*=================================================================
    FUNÇÕES DE GRAVAÇÃO DE DADOS
 =================================================================*/
-
 
 // Cria o arquivo CSV com o cabeçalho das colunas
 static void criar_arquivo_csv_com_cabecalho(void) {
@@ -437,7 +426,6 @@ static void criar_arquivo_csv_com_cabecalho(void) {
     }
 }
 
-
 // Lê dados do sensor MPU6050 e salva no cartão SD
 static void gravar_dados_do_sensor(void) {
     if (!cartao_sd_conectado) {
@@ -445,10 +433,8 @@ static void gravar_dados_do_sensor(void) {
         piscar_led_erro_critico();
     }
 
-
     // LED azul indica que está gravando dados
     definir_cor_led(false, false, true);
-
 
     // Abre o arquivo CSV para adicionar nova linha
     FIL arquivo;
@@ -457,10 +443,8 @@ static void gravar_dados_do_sensor(void) {
         piscar_led_erro_critico();
     }
 
-
     // Lê os dados atuais do sensor MPU6050
     mpu6050_read_data(&dados_sensor_atuais);
-
 
     // Formata os dados em uma linha CSV
     char linha_dados[256];
@@ -471,26 +455,21 @@ static void gravar_dados_do_sensor(void) {
         dados_sensor_atuais.gyro_x,  dados_sensor_atuais.gyro_y,  dados_sensor_atuais.gyro_z,
         dados_sensor_atuais.temp_c);
 
-
     // Grava a linha no arquivo e fecha
     f_write(&arquivo, linha_dados, strlen(linha_dados), NULL);
     f_close(&arquivo);
 
-
     // LED vermelho indica sistema ativo
     definir_cor_led(true, false, false);
-
 
     // Atualiza informações na tela
     alterar_contador_amostras_display(contador_amostras);
     alterar_mensagem_display("Dados salvos");
 }
 
-
 /*=================================================================
    FUNÇÕES DE CONTROLE DA GRAVAÇÃO
 =================================================================*/
-
 
 // Inicia o processo de coleta e gravação de dados
 static void iniciar_gravacao_dados(void) {
@@ -500,7 +479,6 @@ static void iniciar_gravacao_dados(void) {
     }
     if (esta_gravando) return; // Já está gravando
 
-
     esta_gravando = true;
     definir_cor_led(true, false, false); // LED vermelho = gravando
     alterar_status_display("GRAVANDO");
@@ -508,11 +486,9 @@ static void iniciar_gravacao_dados(void) {
     proxima_medicao = get_absolute_time();
 }
 
-
 // Para o processo de coleta e gravação de dados
 static void parar_gravacao_dados(void) {
     if (!esta_gravando) return; // Já está parado
-
 
     esta_gravando = false;
     definir_cor_led(false, true, false); // LED verde = parado
@@ -520,11 +496,9 @@ static void parar_gravacao_dados(void) {
     alterar_mensagem_display("");
 }
 
-
 /*=================================================================
    FUNÇÕES DOS BOTÕES DE CONTROLE
 =================================================================*/
-
 
 // Função chamada quando um botão é pressionado
 static void processar_clique_botao(uint pino_gpio, uint32_t eventos) {
@@ -533,7 +507,6 @@ static void processar_clique_botao(uint pino_gpio, uint32_t eventos) {
     uint64_t agora = time_us_64();
     if (agora - ultimo_clique < TEMPO_DEBOUNCE_US) return;
     ultimo_clique = agora;
-
 
     // Processa ação baseada no botão pressionado
     if (pino_gpio == BOTAO_CARTAO_SD) {
@@ -551,11 +524,10 @@ static void processar_clique_botao(uint pino_gpio, uint32_t eventos) {
             iniciar_gravacao_dados();
         }
     } else if (pino_gpio == BOTAO_VALORES) {
-        // Alterna entre as três telas (principal -> valores -> gráfico -> principal)
-        alternar_tela();
+        // Cicla entre as telas: principal -> valores -> gráfico -> principal
+        ciclar_telas();
     }
 }
-
 
 // Configura os botões e suas interrupções
 static void configurar_botoes_controle(void) {
@@ -570,24 +542,20 @@ static void configurar_botoes_controle(void) {
     gpio_pull_up(BOTAO_GRAVACAO);
     gpio_pull_up(BOTAO_VALORES);
 
-
     // Configura interrupções para detectar quando botões são pressionados
     gpio_set_irq_enabled_with_callback(BOTAO_CARTAO_SD, GPIO_IRQ_EDGE_FALL, true, &processar_clique_botao);
     gpio_set_irq_enabled_with_callback(BOTAO_GRAVACAO, GPIO_IRQ_EDGE_FALL, true, &processar_clique_botao);
     gpio_set_irq_enabled_with_callback(BOTAO_VALORES, GPIO_IRQ_EDGE_FALL, true, &processar_clique_botao);
 }
 
-
 /*=================================================================
    FUNÇÃO DE INICIALIZAÇÃO DO SISTEMA
 =================================================================*/
-
 
 // Inicializa todos os componentes do sistema
 static bool inicializar_sistema_completo(void) {
     alterar_status_display("INICIANDO...");
     definir_cor_led(true, true, false); // LED amarelo = inicializando
-
 
     // Inicializa driver do cartão SD
     if (!sd_init_driver()) {
@@ -595,13 +563,11 @@ static bool inicializar_sistema_completo(void) {
         return false;
     }
 
-
     // Conecta cartão SD
     if (!conectar_cartao_sd()) {
         printf("Erro ao conectar cartão SD.\n");
         return false;
     }
-
 
     // Configura comunicação I²C para o sensor MPU6050
     i2c_init(I2C_SENSOR_PORTA, 400 * 1000);
@@ -610,18 +576,14 @@ static bool inicializar_sistema_completo(void) {
     gpio_pull_up(I2C_SENSOR_SDA);
     gpio_pull_up(I2C_SENSOR_SCL);
 
-
     // Inicializa o sensor MPU6050
     mpu6050_init(I2C_SENSOR_PORTA);
-
 
     // Configura botões de controle
     configurar_botoes_controle();
 
-
     // Cria arquivo CSV inicial
     criar_arquivo_csv_com_cabecalho();
-
 
     // Sistema pronto para uso
     definir_cor_led(false, true, false); // LED verde = pronto
@@ -629,11 +591,9 @@ static bool inicializar_sistema_completo(void) {
     return true;
 }
 
-
 /*=================================================================
    FUNÇÃO PRINCIPAL DO PROGRAMA
 =================================================================*/
-
 
 int main(void) {
     // Inicializa comunicação USB para debug
@@ -644,7 +604,6 @@ int main(void) {
     configurar_display_oled();
     atualizar_tela(); // Mostra tela inicial
 
-
     // Aguarda um tempo para estabilizar o sistema
     sleep_ms(2500);
     
@@ -654,27 +613,21 @@ int main(void) {
         piscar_led_erro_critico(); // Trava aqui se houver erro
     }
 
-
     // Inicializa tempo para primeira atualização de valores
     proxima_atualizacao_valores = get_absolute_time();
-
 
     // Loop principal do programa
     while (1) {
         // Se está na tela de valores ou gráfico, atualiza os dados periodicamente
-        if ((tela_atual == 1 || tela_atual == 2) && time_reached(proxima_atualizacao_valores)) {
+        if ((tela_atual == TELA_VALORES || tela_atual == TELA_GRAFICO) && 
+            time_reached(proxima_atualizacao_valores)) {
             // Lê novos dados do sensor
             mpu6050_read_data(&dados_sensor_atuais);
             // Atualiza a tela com os novos valores
-            if (tela_atual == 1) {
-                mostrar_tela_valores_sensores();
-            } else if (tela_atual == 2) {
-                mostrar_tela_grafico_barras();
-            }
+            atualizar_tela();
             // Agenda próxima atualização
             proxima_atualizacao_valores = make_timeout_time_ms(TEMPO_ATUALIZACAO_VALORES_MS);
         }
-
 
         // Se está gravando E cartão SD conectado E chegou a hora da próxima medição
         if (esta_gravando && cartao_sd_conectado && time_reached(proxima_medicao)) {

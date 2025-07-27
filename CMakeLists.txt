@@ -35,6 +35,9 @@ add_executable(${PROJECT_NAME}
     Main.c
     lib/hw_config.c
 
+    # --- BIBLIOTECA MPU6050 ---
+    lib/mpu6050.c
+
     # Ficheiros da biblioteca FatFs_SPI
     lib/FatFs_SPI/ff15/source/ff.c
     lib/FatFs_SPI/ff15/source/ffsystem.c
@@ -62,7 +65,8 @@ pico_generate_pio_header(${PROJECT_NAME} ${CMAKE_CURRENT_SOURCE_DIR}/lib/Matriz_
 
 # --- Adicionar TODOS os Diretórios de Inclusão (.h) ---
 target_include_directories(${PROJECT_NAME} PRIVATE
-    .  # Diretório raiz do projeto
+    .   # Diretório raiz do projeto
+    lib # Diretório para a biblioteca MPU6050 e outras
 
     # Diretórios da biblioteca FatFs_SPI
     lib/FatFs_SPI/ff15/source
@@ -81,13 +85,12 @@ target_link_libraries(${PROJECT_NAME} PRIVATE
     hardware_spi     # Para SPI (usado em SD card)
     hardware_dma     # Para DMA
     hardware_rtc     # Para RTC
-    hardware_i2c     # Para I2C (usado em display?)
+    hardware_i2c     # Para I2C (usado em display e MPU6050)
     hardware_clocks  # Para clocks
     hardware_adc     # Para ADC
     hardware_pio     # Para PIO (ws2812)
     hardware_gpio    # Para GPIOs e IRQs (botões)
     pico_bootrom     # Para reset_usb_boot
-    hardware_i2c
 )
 
 # --- Configuração de Saída Padrão (stdio) e Ficheiros Finais ---

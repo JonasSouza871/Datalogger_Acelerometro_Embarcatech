@@ -73,6 +73,6 @@ void mpu6050_read_data(mpu6050_data_t *data) {
     data->gyro_y = raw_gy / GYRO_SENSITIVITY;
     data->gyro_z = raw_gz / GYRO_SENSITIVITY;
 
-    // Temperatura: usa a fórmula do datasheet
-    data->temp_c = (raw_temp / 340.0) + 36.53;
+   // Temperatura: usa a fórmula do datasheet com correção de calibração
+    data->temp_c = (raw_temp / 340.0) + 36.53 - 24.0;
 }

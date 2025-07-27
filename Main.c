@@ -99,7 +99,7 @@ void salvar_amostra_mpu6050() {
     }
 
     FIL arquivo;
-    if (f_open(&arquivo, "dados_mpu34.txt", FA_WRITE | FA_OPEN_APPEND) != FR_OK) {
+    if (f_open(&arquivo, "dados_mpuTEMQUEIR23.txt", FA_WRITE | FA_OPEN_APPEND) != FR_OK) {
         printf("Erro ao abrir arquivo 'dados_mpu.txt'!\n");
         return;
     }

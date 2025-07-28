@@ -41,7 +41,7 @@
 #define BUZZER_PIN          10  // Buzzer conectado no pino 10
 
 // Configurações de tempo
-#define TEMPO_ENTRE_LEITURAS_MS   100 // 100 ms entre cada medição
+#define TEMPO_ENTRE_LEITURAS_MS   500 // 100 ms entre cada medição
 #define TEMPO_DEBOUNCE_US         300000  // Evita múltiplos cliques nos botões
 #define TEMPO_ATUALIZACAO_VALORES_MS 500 // Atualiza valores dos sensores na tela
 
@@ -582,7 +582,7 @@ static void criar_arquivo_csv_com_cabecalho(void) {
     if (!cartao_sd_conectado) return;
     
     FIL arquivo;
-    if (f_open(&arquivo, "dados_nivel_03.csv", FA_WRITE | FA_CREATE_NEW) == FR_OK) {
+    if (f_open(&arquivo, "dados_MPU2.csv", FA_WRITE | FA_CREATE_NEW) == FR_OK) {
         const char *cabecalho = 
             "Amostra,Acel_X,Acel_Y,Acel_Z,Giro_X,Giro_Y,Giro_Z,Temperatura\n";
         f_write(&arquivo, cabecalho, strlen(cabecalho), NULL);
@@ -603,7 +603,7 @@ static void gravar_dados_do_sensor(void) {
 
     // Abre o arquivo CSV para adicionar nova linha
     FIL arquivo;
-    if (f_open(&arquivo, "dados_nivel_03.csv", FA_WRITE | FA_OPEN_APPEND) != FR_OK) {
+    if (f_open(&arquivo, "dados_MPU2.csv", FA_WRITE | FA_OPEN_APPEND) != FR_OK) {
         alterar_status_display("ERRO ARQUIVO");
         piscar_led_erro_critico();
     }

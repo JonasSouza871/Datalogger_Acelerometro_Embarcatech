@@ -11,13 +11,13 @@ Um datalogger de 6 eixos completo, baseado no Raspberry Pi Pico, com armazenamen
 
 ---
 
-### 📝 Descrição Breve
+## 📝 Descrição Breve
 
 Este projeto transforma um Raspberry Pi Pico em um poderoso Datalogger para o sensor MPU6050. Ele é projetado para capturar dados de aceleração e giroscópio em 6 eixos, armazenando-os de forma confiável em um arquivo CSV em um cartão SD. O sistema conta com uma interface de usuário rica, exibida em um display OLED, que permite o monitoramento de status, a visualização de dados em tempo real (numéricos e em gráfico de barras) e o controle total das operações através de botões físicos. O feedback ao usuário é aprimorado com um LED RGB e um buzzer, que fornecem indicações claras sobre o estado do sistema.
 
 ---
 
-### ✨ Funcionalidades Principais
+## ✨ Funcionalidades Principais
 
 -   **✅ Coleta de Dados de 6 Eixos:** Leitura contínua dos dados do acelerômetro (3 eixos) e do giroscópio (3 eixos) do sensor MPU6050.
 -   **✅ Armazenamento em Cartão SD:** Salva as amostras coletadas em um arquivo `dados_MPU2.csv`, com cabeçalho e formato adequados para fácil análise.
@@ -39,16 +39,15 @@ Este projeto transforma um Raspberry Pi Pico em um poderoso Datalogger para o se
 
 ---
 
-### 🖼 Galeria do Projeto
+## 🖼 Galeria do Projeto
+### Fluxograma de Dados
+![Fluxograma de dados](https://github.com/user-attachments/assets/e323265d-ec9a-42ac-a45a-dc51a73da7b4)
 
-| Hardware em Operação | Exemplo de Gráfico Gerado |
-| :------------------: | :-----------------------: |
-| *[INSERIR FOTO DO CIRCUITO AQUI]* | *[INSERIR IMAGEM DO GRÁFICO AQUI]* |
-| Visão geral do Datalogger montado. | Gráfico de aceleração gerado a partir dos dados coletados. |
 
----
+### Exemplo de Gráfico Gerado
+![Gráfico de dados do motor nível 3](https://github.com/user-attachments/assets/e2fc9720-0fd8-4f26-b8c5-7329f3a55391)
 
-### ⚙ Hardware Necessário
+## ⚙ Hardware Necessário
 
 | Componente | Quant. | Observações |
 | :--- | :---: | :--- |
@@ -63,9 +62,9 @@ Este projeto transforma um Raspberry Pi Pico em um poderoso Datalogger para o se
 
 ---
 
-### 🔌 Conexões e Configuração
+## 🔌 Conexões e Configuração
 
-#### Pinagem Resumida
+### Pinagem Resumida
 
 **Barramento I2C 0 (Sensor):**
 -   `MPU6050 SDA` -> `GPIO 0`
@@ -90,7 +89,7 @@ Este projeto transforma um Raspberry Pi Pico em um poderoso Datalogger para o se
 
 ---
 
-### 🚀 Começando
+## 🚀 Começando
 
 #### Pré-requisitos de Software
 

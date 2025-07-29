@@ -41,7 +41,7 @@
 #define BUZZER_PIN          10  // Buzzer conectado no pino 10
 
 // Configurações de tempo
-#define TEMPO_ENTRE_LEITURAS_MS   500 // 100 ms entre cada medição
+#define TEMPO_ENTRE_LEITURAS_MS   500 // 500 ms entre cada medição
 #define TEMPO_DEBOUNCE_US         300000  // Evita múltiplos cliques nos botões
 #define TEMPO_ATUALIZACAO_VALORES_MS 500 // Atualiza valores dos sensores na tela
 

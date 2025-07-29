@@ -1,7 +1,7 @@
 text
 # 🚀 Pico MPU6050 Datalogger – Registrador de Dados de 6 Eixos
 
-![C](https://img.shields.io/badge/C-00599C?style=for-the-badge&logo=c&logoColor=white)
+!(https://img.shields.io/badge/C-00599C?style=for-the-badge&logo=c&logoColor=white)
 ![Python](https://img.shields.io/badge/Python-3776AB?style=for-the-badge&logo=python&logoColor=white)
 ![CMake](https://img.shields.io/badge/CMake-064F8C?style=for-the-badge&logo=cmake&logoColor=white)
 ![Raspberry Pi Pico](https://img.shields.io/badge/Raspberry%20Pico-A22846?style=for-the-badge&logo=raspberrypi&logoColor=white)

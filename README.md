@@ -106,8 +106,8 @@ Siga estes passos para configurar, compilar e carregar o firmware no seu Pico.
 
 ```bash
 # 1. Clone o repositório do projeto
-git clone [URL_DO_SEU_REPOSITORIO]
-cd [NOME_DO_DIRETORIO]
+git clone [https://github.com/JonasSouza871/Datalogger_Acelerometro_Embarcatech.git]
+cd [Datalogger_Acelerometro_Embarcatech]
 
 # 2. Configure o ambiente de build com CMake
 # (Certifique-se de que o PICO_SDK_PATH está definido como variável de ambiente)

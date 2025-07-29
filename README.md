@@ -4,7 +4,8 @@ text
 ![C](https://img.shields.io/badge/C-00599C?style=for-the-badge&logo=c&logoColor=white)
 ![Python](https://img.shields.io/badge/Python-3776AB?style=for-the-badge&logo=python&logoColor=white)
 ![CMake](https://img.shields.io/badge/CMake-064F8C?style=for-the-badge&logo=cmake&logoColor=white)
-![Raspberry Pi](https://img.shields.io/badge/Raspberry%20Pi-A22846?style=for-the-badge&logo=Raspberry%20Pi&logoColor=white)
+![Raspberry Pi Pico](https://img.shields.io/badge/Raspberry%20Pico-A22846?style=for-the-badge&logo=raspberrypi&logoColor=white)
+
 
 Um datalogger de 6 eixos completo, baseado no Raspberry Pi Pico, com armazenamento em cartão SD, display OLED e interface de controle física.
 

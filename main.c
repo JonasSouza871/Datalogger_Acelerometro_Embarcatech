@@ -9,7 +9,7 @@
 #include "f_util.h"
 #include "hw_config.h"
 #include "sd_card.h"
-#include "mpu6050.h"
+#include "mpu6050.h" // biblioteca Mpu para falicitar a chamada das conversões
 #include "ssd1306.h"
 
 // CONFIGURAÇÕES DE HARDWARE - Definem quais pinos usar
